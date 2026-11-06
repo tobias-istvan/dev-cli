@@ -13,7 +13,22 @@
     "templates"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^8.7.5",
+    "commander": "^15.1.0",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
   },
   "publishConfig": {
     "access": "public"

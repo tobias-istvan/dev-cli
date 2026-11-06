@@ -1,0 +1,183 @@
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { isNode, isSeq, parseDocument, stringify, YAMLSeq } from "yaml";
+import type { Problem, Scope } from "../plugins/types.ts";
+import { DevError } from "./output.ts";
+import { CONFIG_FILE } from "./workspace.ts";
+
+/**
+ * dev.yaml: the project config, committed with the workspace and shared by the team. It
+ * never holds credentials.
+ *
+ * This module checks the file's own shape. Whether each service exists and accepts its
+ * scope is checked against the plugins, in doctor.
+ */
+
+export const CONFIG_VERSION = 1;
+
+export interface ServiceConfig {
+  /** "<plugin>:<service>", like "atlassian:jira". */
+  service: string;
+  scope: Scope;
+}
+
+export interface ProjectConfig {
+  version: number;
+  versioning?: { service: string; repo: string };
+  services: ServiceConfig[];
+  conventions: { branch?: string };
+}
+
+const SERVICE_KEY = /^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$/;
+const TOP_LEVEL = new Set(["version", "versioning", "services", "conventions", "plugins"]);
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Parses dev.yaml's text. Never throws: every problem is returned, with a fix. */
+export function parseConfig(text: string): { config: ProjectConfig; problems: Problem[] } {
+  const problems: Problem[] = [];
+  const config: ProjectConfig = { version: CONFIG_VERSION, services: [], conventions: {} };
+
+  const document = parseDocument(text);
+  if (document.errors.length > 0) {
+    for (const error of document.errors) {
+      problems.push({ message: `${CONFIG_FILE} isn't valid YAML: ${error.message.split("\n")[0]}` });
+    }
+    return { config, problems };
+  }
+
+  const data: unknown = document.toJS();
+  if (!isObject(data)) {
+    problems.push({ message: `${CONFIG_FILE} is empty or isn't a set of keys.`, fix: 'Run "dev init" to create it.' });
+    return { config, problems };
+  }
+
+  for (const key of Object.keys(data)) {
+    if (!TOP_LEVEL.has(key)) problems.push({ message: `${CONFIG_FILE} has an unknown key "${key}".`, fix: "Remove it, or check its spelling." });
+  }
+
+  if (data.version !== CONFIG_VERSION) {
+    problems.push({
+      message: `${CONFIG_FILE} has version ${JSON.stringify(data.version)}, and this dev understands version ${CONFIG_VERSION}.`,
+      fix: data.version === undefined ? `Add "version: ${CONFIG_VERSION}".` : "Update dev, or check the file.",
+    });
+  }
+
+  if (data.versioning !== undefined) {
+    const versioning = data.versioning;
+    if (!isObject(versioning) || typeof versioning.service !== "string" || typeof versioning.repo !== "string") {
+      problems.push({ message: '"versioning" needs a "service" and a "repo".', fix: 'For example: service: github:versioning and repo: owner/name.' });
+    } else if (!SERVICE_KEY.test(versioning.service)) {
+      problems.push({ message: `"versioning.service" should look like plugin:service, not "${versioning.service}".` });
+    } else {
+      config.versioning = { service: versioning.service, repo: versioning.repo };
+    }
+  }
+
+  if (data.services !== undefined && !Array.isArray(data.services)) {
+    problems.push({ message: '"services" should be a list.' });
+  }
+
+  const seen = new Set<string>();
+  for (const [index, entry] of (Array.isArray(data.services) ? data.services : []).entries()) {
+    const where = `services[${index}]`;
+    if (!isObject(entry) || typeof entry.service !== "string") {
+      problems.push({ message: `${where} needs a "service", like atlassian:jira.` });
+      continue;
+    }
+    if (!SERVICE_KEY.test(entry.service)) {
+      problems.push({ message: `${where}.service should look like plugin:service, not "${entry.service}".` });
+      continue;
+    }
+    if (seen.has(entry.service)) {
+      problems.push({ message: `${entry.service} is listed twice.`, fix: "Keep one entry and merge the scopes." });
+      continue;
+    }
+    if (entry.scope !== undefined && !isObject(entry.scope)) {
+      problems.push({ message: `${entry.service}'s scope should be a set of keys.` });
+      continue;
+    }
+    seen.add(entry.service);
+    config.services.push({ service: entry.service, scope: (entry.scope as Scope | undefined) ?? {} });
+  }
+
+  if (data.conventions !== undefined) {
+    if (!isObject(data.conventions)) {
+      problems.push({ message: '"conventions" should be a set of keys.' });
+    } else if (data.conventions.branch !== undefined) {
+      if (typeof data.conventions.branch !== "string" || !data.conventions.branch.includes("{id}")) {
+        problems.push({ message: '"conventions.branch" should be text containing {id}, like "{type}/{id}-{slug}".' });
+      } else {
+        config.conventions.branch = data.conventions.branch;
+      }
+    }
+  }
+
+  return { config, problems };
+}
+
+export function configPath(root: string): string {
+  return path.join(root, CONFIG_FILE);
+}
+
+/** Loads dev.yaml, failing with every problem listed when it isn't usable. */
+export function loadConfig(root: string): ProjectConfig {
+  const file = configPath(root);
+  if (!existsSync(file)) {
+    throw new DevError(`There's no ${CONFIG_FILE} in ${root}.`, 'Run "dev init".');
+  }
+  const { config, problems } = parseConfig(readFileSync(file, "utf8"));
+  if (problems.length > 0) {
+    throw new DevError(
+      `${CONFIG_FILE} has problems:\n${problems.map((p) => `- ${p.message}${p.fix ? ` ${p.fix}` : ""}`).join("\n")}`,
+      'Fix them, then run "dev doctor".',
+    );
+  }
+  return config;
+}
+
+/**
+ * Writes dev.yaml. An existing file keeps its comments: only the keys this config sets
+ * are replaced.
+ */
+export function saveConfig(root: string, config: ProjectConfig): void {
+  const file = configPath(root);
+  const data: Record<string, unknown> = { version: config.version };
+  if (config.versioning) data.versioning = config.versioning;
+  data.services = config.services.map((s) => (Object.keys(s.scope).length > 0 ? s : { service: s.service }));
+  if (Object.keys(config.conventions).length > 0) data.conventions = config.conventions;
+
+  if (!existsSync(file)) {
+    writeFileSync(file, stringify(data));
+    return;
+  }
+
+  const document = parseDocument(readFileSync(file, "utf8"));
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+  for (const [key, value] of Object.entries(data)) {
+    const current = document.get(key, true);
+    const currentValue: unknown = isNode(current) ? current.toJSON() : current;
+    if (same(currentValue, value)) continue;
+
+    if (key === "services" && isSeq(current) && Array.isArray(value)) {
+      // Keep each unchanged entry's node, so its comments stay with it.
+      const kept = new YAMLSeq();
+      for (const entry of value) {
+        const existing = current.items.find((item) => same(isNode(item) ? item.toJSON() : item, entry));
+        kept.items.push(existing ?? document.createNode(entry));
+      }
+      kept.commentBefore = current.commentBefore;
+      kept.comment = current.comment;
+      document.set(key, kept);
+      continue;
+    }
+    document.set(key, value);
+  }
+  for (const key of ["versioning", "conventions"]) {
+    if (!(key in data)) document.delete(key);
+  }
+  writeFileSync(file, document.toString());
+}

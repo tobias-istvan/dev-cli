@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 0 complete. Open questions are at the end.
+Status: phase 1 complete. Open questions are at the end.
 
 ## Goals
 
@@ -117,11 +117,26 @@ Each service validates its own `scope`. `dev doctor` checks the whole file.
 
 Per person, outside every workspace, in `$XDG_CONFIG_HOME/dev/` (default `~/.config/dev/`):
 
-- one credentials file per plugin and account, readable only by the owner
+- `credentials/<plugin>.json`: every account for that plugin, and which is the default.
+  The folder is owner-only (700) and the file too (600). Writes go through a temporary
+  file, so a crash never leaves half a file
 - `policy.json`: the command check's decisions (see Command check)
 
-An OS keychain can come later behind the same interface. Values set in the environment
-override the file, for scripts.
+An OS keychain can come later behind the same interface. For scripts, environment
+variables named `DEV_<PLUGIN>_<KEY>`, like `DEV_ATLASSIAN_TOKEN`, override the default
+account's values.
+
+### Generated files
+
+`dev files` writes `AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md`, a skill
+per service in each tool's skill folder, service docs, MCP entries and a managed block in
+`.gitignore`. Every command table comes from the command tree itself, so the docs can't
+drift from the commands.
+
+dev records a hash of each file it writes in `.dev/generated.json`. A file still as dev
+wrote it is updated; a file someone edited is left alone and listed; a file that no longer
+applies is removed only if nobody edited it. `.gitignore` keeps every line outside dev's
+block.
 
 ## Commands
 
@@ -129,6 +144,8 @@ override the file, for scripts.
 | --- | --- |
 | `dev init [folder]` | The setup wizard. Safe to run again |
 | `dev doctor` | Checks config, logins, scopes and required tools, with a fix for each problem |
+| `dev files` | Updates the generated agent files from `dev.yaml`, leaving hand-edited ones alone |
+| `dev index [service]` | Rebuilds service folders' `index.md` from front matter |
 | `dev add <service>`, `dev remove <service>` | Enable or disable one service, as init does |
 | `dev login <plugin>`, `dev logout <plugin>` | Log in or out. People only, never agents |
 | `dev sync [service]` | Sync every enabled service, or one |
