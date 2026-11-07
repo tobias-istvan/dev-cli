@@ -359,7 +359,7 @@ test("Confluence short links are recognised by their page id", async () => {
   assert.equal(shortLinkId("DoBcSg"), "1247576078");
   assert.equal(shortLinkId("MIQrSg"), "1244365872");
   assert.equal(shortLinkId("not a code!"), null);
-  const found = confluence.links?.find("See https://x.atlassian.net/wiki/x/MIQrSg and https://x.atlassian.net/wiki/spaces/A/pages/1244365872/Same", {});
+  const found = confluence.links?.find("See https://x.atlassian.net/wiki/x/MIQrSg and https://x.atlassian.net/wiki/spaces/A/pages/1244365872/Same", {} as never);
   assert.deepEqual(found?.map((r) => r.id), ["1244365872"], "the same page once");
 });
 
@@ -368,6 +368,7 @@ test("the sweep reads every open ticket, not only those in scope", async () => {
   await dev(root, ["sync", "jira"]);
   // ABC-9 is outside the scope, open, and links the spec. ABC-1 no longer does.
   writeFileSync(path.join(root, "jira", "ABC-1", "ticket.md"), readFileSync(path.join(root, "jira", "ABC-1", "ticket.md"), "utf8").replace(/\[spec\]\([^)]*\)/, "spec"));
+  rmSync(path.join(root, "confluence"), { recursive: true, force: true });
   const result = await dev(root, ["sync", "confluence", "--referenced"]);
   assert.match(result.out, /Confluence: \d+ new from references/);
   assert.ok(existsSync(path.join(root, "confluence", "SP", "Spec-100", "index.md")));

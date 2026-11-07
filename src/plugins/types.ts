@@ -162,8 +162,12 @@ export interface Reference {
 }
 
 export interface LinkCapability {
-  /** Every reference to this service's items found in a piece of text. The scope helps tell real ones from lookalikes. */
-  find(text: string, scope: Scope): Reference[];
+  /**
+   * Every reference to this service's items found in a piece of text. Must be quick and
+   * local. The context's scope, and the workspace it gives access to, help tell real
+   * references from lookalikes.
+   */
+  find(text: string, context: ServiceContext): Reference[];
   /** Fetches one referenced item into the service's folder, and returns its file. */
   fetch(context: ServiceContext, reference: Reference): Promise<string>;
 }

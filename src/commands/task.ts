@@ -33,11 +33,10 @@ export interface StartOptions {
 async function resolve(root: string, config: ProjectConfig, registry: Registry, ref: string, out: Output): Promise<{ entry: ServiceEntry; reference: Reference; context: TaskContext } | null> {
   for (const entry of enabledServices(config, registry)) {
     const links = entry.service.links;
-    const scope = config.services.find((s) => s.service === entry.key)?.scope ?? {};
-    const reference = links?.find(ref, scope).find((r) => r.id === ref || r.url === ref);
+    const context = workspaceServiceContext(root, entry, config, registry, out);
+    const reference = links?.find(ref, context).find((r) => r.id === ref || r.url === ref);
     if (!links || !reference) continue;
 
-    const context = workspaceServiceContext(root, entry, config, registry, out);
     const file = await links.fetch(context, reference);
     const task = entry.service.contribute?.taskStart
       ? await entry.service.contribute.taskStart(context, reference)

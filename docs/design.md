@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 3b complete (tasks, the fetch boundary, referenced syncing, files are never removed). Open questions are at the end.
+Status: phase 4 complete (GitHub Issues as a second task source). Open questions are at the end.
 
 ## Goals
 
@@ -298,6 +298,19 @@ task's brief links to its specs, without any service knowing about the others.
 Rules every agent follows, written into `AGENTS.md`: never push or open a PR unless asked in
 the session, no other writes to a service unless asked each time, never handle credentials,
 never commit sync output, read indexes before files.
+
+## What phase 4 taught the interface
+
+GitHub Issues was added as a second task source, to test the interface. It needed two
+changes, both small:
+
+- **`links.find` gets the service's context, not just its scope.** Recognising "closes #42"
+  needs the workspace's own repository, which lives in `dev.yaml`, not in the scope.
+- **Syncing a task source sweeps every service.** `dev sync github-issues` now fetches what
+  the issues point to from Confluence or any other service, as a full sync already did.
+
+Everything else, from `dev task list` and the snapshot to task start, the indexes and the
+sweep, worked through the `tasks`, `links` and `contribute` capabilities unchanged.
 
 ## Technical choices
 

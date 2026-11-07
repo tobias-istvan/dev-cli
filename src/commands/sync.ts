@@ -69,7 +69,7 @@ async function sweep(root: string, config: ProjectConfig, registry: Registry, ou
     // Every reference once, with every source pointing to it.
     const references = new Map<string, { reference: Reference; sources: Set<string> }>();
     for (const { source, text } of texts) {
-      for (const reference of links.find(text, context.scope)) {
+      for (const reference of links.find(text, context)) {
         const known = references.get(reference.id) ?? { reference, sources: new Set<string>() };
         known.sources.add(source);
         references.set(reference.id, known);
@@ -130,7 +130,9 @@ export async function syncServices(root: string, config: ProjectConfig, registry
       out.warn(`${entry.service.title}: failed. ${(error as Error).message}${fix ? ` ${fix}` : ""}`);
     }
   }
-  await sweep(root, config, registry, out, entries);
+  // Syncing a task source also fetches what its tasks point to, from every other service.
+  const targets = entries.some((entry) => entry.service.tasks) ? enabledServices(config, registry) : entries;
+  await sweep(root, config, registry, out, targets);
   return ok;
 }
 

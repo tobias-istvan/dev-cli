@@ -28,14 +28,14 @@ export async function resolveReferences(tools: LinkTools, text: string, exclude?
   for (const entry of tools.registry.services()) {
     if (!enabled.has(entry.key) || entry.key === exclude || !entry.service.links) continue;
 
-    const scope = tools.config.services.find((s) => s.service === entry.key)?.scope ?? {};
-    for (const reference of entry.service.links.find(text, scope)) {
+    const context = tools.contextFor(entry);
+    for (const reference of entry.service.links.find(text, context)) {
       const key = `${reference.service}:${reference.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
       try {
-        const file = await entry.service.links.fetch(tools.contextFor(entry), reference);
+        const file = await entry.service.links.fetch(context, reference);
         results.push({ reference, file: existsSync(file) ? path.relative(tools.root, file) : null });
       } catch (error) {
         if (error instanceof OutsideScope) {

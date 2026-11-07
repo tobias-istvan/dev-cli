@@ -374,8 +374,8 @@ export const jira: Service = {
   },
 
   links: {
-    find(text, scope) {
-      const keys = keysIn(text, scope).map((id) => ({ service: SERVICE, id }));
+    find(text, context) {
+      const keys = keysIn(text, context.scope).map((id) => ({ service: SERVICE, id }));
       // Browse links count whatever the project, since they can't be lookalikes.
       for (const match of text.matchAll(/https?:\/\/[\w.-]+(?::\d+)?\/browse\/([A-Z][A-Z0-9]{1,9}-\d+)/g)) {
         if (match[1] && !keys.some((k) => k.id === match[1])) keys.push({ service: SERVICE, id: match[1] });
