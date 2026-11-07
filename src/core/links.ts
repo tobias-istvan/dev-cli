@@ -27,7 +27,8 @@ export async function resolveReferences(tools: LinkTools, text: string, exclude?
   for (const entry of tools.registry.services()) {
     if (!enabled.has(entry.key) || entry.key === exclude || !entry.service.links) continue;
 
-    for (const reference of entry.service.links.find(text)) {
+    const scope = tools.config.services.find((s) => s.service === entry.key)?.scope ?? {};
+    for (const reference of entry.service.links.find(text, scope)) {
       const key = `${reference.service}:${reference.id}`;
       if (seen.has(key)) continue;
       seen.add(key);

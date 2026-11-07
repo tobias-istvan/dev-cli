@@ -73,9 +73,20 @@ export function commandRows(program: Command, enabled: Set<string>, services: Se
 
 function addServiceCommands(program: Command, entry: ServiceEntry, registry: Registry, out: Output): void {
   const commands = entry.service.commands ?? [];
-  if (commands.length === 0) return;
+  if (commands.length === 0 && entry.service.role !== "connected") return;
 
   const group = program.command(entry.service.id).description(`${entry.service.title}: ${entry.service.description}`);
+
+  if (entry.service.role === "connected") {
+    group
+      .command("scope")
+      .description(`Show or change what ${entry.service.title} syncs`)
+      .option("--set <scope>", "The new scope as YAML or JSON, instead of choosing")
+      .action(async (options: { set?: string }) => {
+        const { runScope } = await import("./commands/services.ts");
+        await runScope(program, registry, out, entry, options);
+      });
+  }
 
   for (const definition of commands) {
     const command = group
@@ -175,6 +186,27 @@ This needs a person at a terminal, so it refuses to run for agents and scripts.`
     .action(async (name: string, options: { account?: string }) => {
       const { runLogout } = await import("./commands/login.ts");
       await runLogout(registry, out, name, options);
+    });
+
+  program
+    .command("add")
+    .description("Enable another service in this workspace")
+    .argument("<service>", "Like jira or confluence")
+    .option("--scope <scope>", "What it syncs, as YAML or JSON, instead of choosing")
+    .addHelpText("after", details("Logs you in if needed, asks what to sync, then updates dev.yaml and the agent files."))
+    .action(async (name: string, options: { scope?: string }) => {
+      const { runAdd } = await import("./commands/services.ts");
+      await runAdd(program, registry, out, name, options);
+    });
+
+  program
+    .command("remove")
+    .description("Disable a service in this workspace")
+    .argument("<service>", "Like jira or confluence")
+    .option("--delete-files", "Also delete its synced folder")
+    .action(async (name: string, options: { deleteFiles?: boolean }) => {
+      const { runRemove } = await import("./commands/services.ts");
+      await runRemove(program, registry, out, name, options);
     });
 
   program

@@ -27,7 +27,8 @@ interface Row {
 
 function markdownFiles(folder: string, include: (file: string) => boolean): string[] {
   return readdirSync(folder, { recursive: true, encoding: "utf8" })
-    .filter((file) => file.endsWith(".md") && path.basename(file) !== INDEX_FILE && include(file.split(path.sep).join("/")))
+    // Only the folder's own index.md is skipped: items may be called index.md, like Confluence pages.
+    .filter((file) => file.endsWith(".md") && file !== INDEX_FILE && include(file.split(path.sep).join("/")))
     .filter((file) => !file.split(path.sep).some((part) => part.startsWith(".")))
     .sort();
 }

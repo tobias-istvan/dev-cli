@@ -147,8 +147,8 @@ export interface Reference {
 }
 
 export interface LinkCapability {
-  /** Every reference to this service's items found in a piece of text. */
-  find(text: string): Reference[];
+  /** Every reference to this service's items found in a piece of text. The scope helps tell real ones from lookalikes. */
+  find(text: string, scope: Scope): Reference[];
   /** Fetches one referenced item into the service's folder, and returns its file. */
   fetch(context: ServiceContext, reference: Reference): Promise<string>;
 }

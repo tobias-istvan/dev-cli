@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { parse, stringify } from "yaml";
 
 /**
@@ -56,4 +59,22 @@ export function renderItem(fields: CommonFields & Record<string, unknown>, body:
   Object.assign(ordered, extra);
 
   return `---\n${stringify(ordered).trimEnd()}\n---\n\n${body.trim()}\n`;
+}
+
+/**
+ * Writes an item, keeping its file exactly as it was when only the sync time would change.
+ * Otherwise every sync would rewrite every file, and the diff would bury what moved.
+ * Returns whether the file was new, changed, or left alone.
+ */
+export async function writeItem(file: string, fields: CommonFields & Record<string, unknown>, body: string): Promise<"added" | "updated" | "unchanged"> {
+  if (existsSync(file)) {
+    const current = readFileSync(file, "utf8");
+    const previous = splitFrontMatter(current).data?.synced;
+    if (typeof previous === "string" && renderItem({ ...fields, synced: previous }, body) === current) return "unchanged";
+    await writeFile(file, renderItem(fields, body));
+    return "updated";
+  }
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, renderItem(fields, body));
+  return "added";
 }

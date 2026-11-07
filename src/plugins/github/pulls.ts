@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ServiceContext, SyncReport } from "../types.ts";
-import { renderItem, splitFrontMatter } from "../../core/front-matter.ts";
+import { splitFrontMatter, writeItem } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitHubApi } from "./api.ts";
@@ -139,8 +139,7 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
     r.file ? `- ${r.reference.id}: [${path.basename(r.file)}](${path.posix.relative(`${FOLDER}/${number}`, r.file.split(path.sep).join("/"))})` : `- ${r.reference.id} (not fetched)`,
   );
 
-  const description = renderItem(
-    {
+  const fields = {
       id: String(number),
       title: pr.title,
       service: "github:github",
@@ -152,8 +151,8 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
       author: pr.user.login,
       base: pr.base.ref,
       head: pr.head.ref,
-    },
-    [
+  };
+  const body = [
       `# PR #${number}: ${pr.title}`,
       "",
       `${pr.user.login} · \`${pr.head.ref}\` into \`${pr.base.ref}\` · [on GitHub](${pr.html_url})`,
@@ -173,12 +172,11 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
       ...files.map((f) => `- \`${f.filename}\` +${f.additions} −${f.deletions}`),
       "",
       "Read the diff with `gh pr diff " + number + "`. Write your review in review.md in this folder.",
-    ].join("\n"),
-  );
+  ].join("\n");
 
   const dir = path.join(folder(context), String(number));
   await mkdir(dir, { recursive: true });
-  await writeFile(path.join(dir, DESCRIPTION), description);
+  await writeItem(path.join(dir, DESCRIPTION), fields, body);
   await writeFile(path.join(dir, "comments.md"), renderComments(number, comments, reviews, inline));
   return { comments: comments.length + reviews.filter((r) => (r.body ?? "").trim()).length + inline.length, links };
 }

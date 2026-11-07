@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 2 complete (GitHub versioning and PR review, init, tasks, the day, sessions, hooks, command check). Open questions are at the end.
+Status: phase 3 complete (Atlassian: Jira and Confluence; add, remove and scope). Open questions are at the end.
 
 ## Goals
 
@@ -69,6 +69,13 @@ my-workspace/
   `ABC-123` or `issue-42`.
 - Synced files are never edited by hand. Everything under `tasks/` is the person's and the
   agent's.
+
+Synced items are written so that a file whose only change would be its sync time is left
+exactly as it was. Without that, every sync would rewrite every file and the diff would bury
+what actually moved.
+
+Items fetched on demand, like a parent ticket or a page a PR links to, carry
+`inScope: false`, so a sync that prunes items which left the scope never removes them.
 
 ### Front matter
 

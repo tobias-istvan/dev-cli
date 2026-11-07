@@ -402,3 +402,19 @@ services:
   assert.match(out, /example:code is a versioning service, so it belongs under "versioning"/);
   assert.match(out, /Unknown service "nobody:here"/);
 });
+
+test("pickers match fuzzily and rank the closest first", async () => {
+  const { fuzzyScore, rank } = await import("../src/core/prompt.ts");
+  const spaces = [
+    { name: "Marketing Site", description: "MKT" },
+    { name: "Design System", description: "DS" },
+    { name: "Product Design Docs", description: "PDD" },
+    { name: "Platform", description: "PLAT" },
+  ];
+  assert.deepEqual(rank("design", spaces).map((s) => s.name), ["Design System", "Product Design Docs"]);
+  assert.deepEqual(rank("dsgn sys", spaces).map((s) => s.name), ["Design System"]);
+  assert.deepEqual(rank("plat", spaces).map((s) => s.name)[0], "Platform");
+  assert.deepEqual(rank("mkt", spaces).map((s) => s.name), ["Marketing Site"], "the key counts too");
+  assert.deepEqual(rank("", spaces), spaces, "an empty search keeps the order");
+  assert.equal(fuzzyScore("xyz", "Design System"), null);
+});
