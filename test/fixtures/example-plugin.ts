@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { gitClone } from "../../src/core/run.ts";
 import type { Plugin } from "../../src/plugins/types.ts";
@@ -68,6 +68,41 @@ const plugin: Plugin = {
           },
         },
       ],
+      async sync(context) {
+        const folder = context.folder ?? context.root;
+        mkdirSync(folder, { recursive: true });
+        if (String(context.scope.book) === "broken") throw new Error("The book is gone.");
+        writeFileSync(path.join(folder, "N-5.md"), "---\nid: N-5\ntitle: Synced note\nservice: example:notes\nurl: https://example.test/N-5\nupdated: 2026-11-07\nsynced: 2026-11-08\n---\n\nText\n");
+        return { added: 1, updated: 0, removed: 0, failed: [] };
+      },
+      links: {
+        find: (text) => [...text.matchAll(/\bN-\d+\b/g)].map((m) => ({ service: "example:notes", id: m[0] })),
+        async fetch(context, reference) {
+          const file = path.join(context.folder ?? context.root, `${reference.id}.md`);
+          mkdirSync(path.dirname(file), { recursive: true });
+          writeFileSync(file, `# ${reference.id}\n\nFix the login button. See N-2.\n`);
+          return file;
+        },
+      },
+      contribute: {
+        async snapshot() {
+          return "## Example notes\n\n- N-5 needs an answer";
+        },
+        async sessionStart() {
+          return ["Notes waiting: N-5."];
+        },
+        async dayEnd() {
+          return ["- 1 note changed"];
+        },
+        async taskStart(context, reference) {
+          return {
+            title: `Fix the login button`,
+            type: "fix",
+            files: [path.join(path.basename(context.folder ?? ""), `${reference.id}.md`)],
+            references: reference.id === "N-1" ? [{ service: "example:notes", id: "N-2" }] : [],
+          };
+        },
+      },
       agentFiles: {
         skills: [{ name: "example-notes", description: "Read team notes. Use when a task mentions a note.", body: "# Notes\n\nRead notes/index.md first." }],
         docs: [{ file: "example-notes.md", content: "# Example notes\n\nHow notes are synced." }],

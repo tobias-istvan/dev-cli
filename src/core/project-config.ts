@@ -25,7 +25,12 @@ export interface ProjectConfig {
   version: number;
   versioning?: { service: string; repo: string };
   services: ServiceConfig[];
-  conventions: { branch?: string };
+  conventions: {
+    /** Branch names for tasks, like "{type}/{id}-{slug}". */
+    branch?: string;
+    /** Files only in the clone, like apps/web/.env.local, copied into each new worktree if git ignores them. */
+    worktreeFiles?: string[];
+  };
 }
 
 const SERVICE_KEY = /^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$/;
@@ -111,6 +116,14 @@ export function parseConfig(text: string): { config: ProjectConfig; problems: Pr
         problems.push({ message: '"conventions.branch" should be text containing {id}, like "{type}/{id}-{slug}".' });
       } else {
         config.conventions.branch = data.conventions.branch;
+      }
+    }
+    const files = isObject(data.conventions) ? data.conventions.worktreeFiles : undefined;
+    if (files !== undefined) {
+      if (!Array.isArray(files) || !files.every((f) => typeof f === "string" && f && !f.startsWith("/") && !f.split("/").includes(".."))) {
+        problems.push({ message: '"conventions.worktreeFiles" should be a list of paths inside the repository, like apps/web/.env.local.' });
+      } else {
+        config.conventions.worktreeFiles = files as string[];
       }
     }
   }

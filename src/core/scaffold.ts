@@ -110,6 +110,38 @@ export function generatedFiles(config: ProjectConfig, registry: Registry, comman
   files.set("CLAUDE.md", template("CLAUDE.md"));
   files.set(".github/copilot-instructions.md", template(".github/copilot-instructions.md"));
 
+  // Session hooks. Guarded, so a machine without dev installed just skips them.
+  const guard = (args: string, cd = false) => `command -v dev >/dev/null 2>&1 && ${cd ? 'cd "\${CLAUDE_PROJECT_DIR:-.}" && ' : ""}dev hook ${args} || true`;
+  files.set(
+    ".github/hooks/dev.json",
+    `${JSON.stringify(
+      {
+        version: 1,
+        hooks: {
+          sessionStart: [{ type: "command", bash: guard("session-start --tool copilot"), cwd: ".", timeoutSec: 15 }],
+          sessionEnd: [{ type: "command", bash: guard("session-end --tool copilot >> .dev/state/hooks.log 2>&1"), cwd: ".", timeoutSec: 60 }],
+          preToolUse: [{ type: "command", bash: guard("pre-tool --tool copilot"), cwd: ".", timeoutSec: 10 }],
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  files.set(
+    ".claude/settings.json",
+    `${JSON.stringify(
+      {
+        hooks: {
+          SessionStart: [{ hooks: [{ type: "command", command: guard("session-start --tool claude", true), timeout: 15 }] }],
+          SessionEnd: [{ hooks: [{ type: "command", command: guard("session-end --tool claude >> .dev/state/hooks.log 2>&1", true), timeout: 60 }] }],
+          PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: guard("pre-tool --tool claude"), timeout: 10 }] }],
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
   const mcp = services.flatMap(({ service }) => service.agentFiles?.mcp ?? []);
   if (mcp.length > 0) {
     const servers = Object.fromEntries(mcp.map((entry) => [entry.name, entry.server]));
@@ -164,7 +196,7 @@ export function scaffold(root: string, config: ProjectConfig, registry: Registry
   const record: Record<string, string> = {};
   const files = generatedFiles(config, registry, commands);
 
-  for (const folder of ["tasks", "worktrees", ...enabledServices(config, registry).filter((e) => e.service.role === "connected").map((e) => e.service.id)]) {
+  for (const folder of ["tasks", "worktrees", ".dev/state", ...enabledServices(config, registry).filter((e) => e.service.role === "connected").map((e) => e.service.id)]) {
     mkdirSync(path.join(root, folder), { recursive: true });
   }
 

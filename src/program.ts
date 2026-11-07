@@ -3,7 +3,7 @@ import path from "node:path";
 import { Command } from "commander";
 import type { Registry } from "./plugins/registry.ts";
 import type { Output, ServiceEntry } from "./plugins/types.ts";
-import { serviceContext } from "./core/context.ts";
+import { workspaceServiceContext } from "./core/context.ts";
 import { DevError } from "./core/output.ts";
 import { packageDir } from "./core/paths.ts";
 import { loadConfig } from "./core/project-config.ts";
@@ -71,7 +71,7 @@ export function commandRows(program: Command, enabled: Set<string>, services: Se
   return rows;
 }
 
-function addServiceCommands(program: Command, entry: ServiceEntry, out: Output): void {
+function addServiceCommands(program: Command, entry: ServiceEntry, registry: Registry, out: Output): void {
   const commands = entry.service.commands ?? [];
   if (commands.length === 0) return;
 
@@ -102,8 +102,7 @@ function addServiceCommands(program: Command, entry: ServiceEntry, out: Output):
       if (!enabled.includes(entry.key)) {
         throw new DevError(`${entry.service.title} isn't enabled in this workspace.`, `Add it with "dev add ${entry.service.id}".`);
       }
-      const scope = config.services.find((s) => s.service === entry.key)?.scope ?? {};
-      await definition.run(serviceContext(root, entry, scope, out), self.args, self.opts());
+      await definition.run(workspaceServiceContext(root, entry, config, registry, out), self.args, self.opts());
     });
   }
 }
@@ -222,7 +221,151 @@ A file you've edited by hand is left as it is and listed, so this is always safe
       runIndex(registry, out, service);
     });
 
-  for (const entry of registry.services()) addServiceCommands(program, entry, out);
+  const task = program.command("task").description("Work on a task in its own worktree");
+
+  task
+    .command("start")
+    .description("Set up a task: its worktree, brief and progress note")
+    .argument("<ref>", "A ticket key, issue number, URL, or a short name for the task")
+    .option("--title <text>", "The task's title, when the reference doesn't give one")
+    .option("--type <word>", "The branch type, like feature or fix (default: from the item, or feature)")
+    .option("--base <branch>", "Branch to start from (default: the repository's default branch)")
+    .addHelpText(
+      "after",
+      details(`
+When an enabled service recognises the reference, its item and what it links to are
+fetched, and the brief links to them. Otherwise the reference is the task's name.
+
+Creates worktrees/<id> on a new branch from the latest base, and tasks/<id>/brief.md and
+progress.md. Safe to re-run: an existing worktree or note is left as it is. It never
+pushes.`),
+    )
+    .action(async (ref: string, options: { title?: string; type?: string; base?: string }) => {
+      const { runTaskStart } = await import("./commands/task.ts");
+      await runTaskStart(registry, out, ref, options);
+    });
+
+  task
+    .command("status")
+    .description("Show the tasks in flight, or one task's state")
+    .argument("[id]", "A task, for its commits and changes")
+    .action(async (id: string | undefined) => {
+      const { runTaskStatus } = await import("./commands/task.ts");
+      await runTaskStatus(out, id);
+    });
+
+  task
+    .command("cleanup")
+    .description("Show which worktrees can go, and remove them on request")
+    .option("--remove", "Remove the worktrees that are safe to remove")
+    .addHelpText(
+      "after",
+      details(`
+Safe means nothing is lost: no uncommitted changes, and every commit already in the base
+branch. Task notes in tasks/ are never removed.`),
+    )
+    .action(async (options: { remove?: boolean }) => {
+      const { runTaskCleanup } = await import("./commands/task.ts");
+      await runTaskCleanup(out, options);
+    });
+
+  program
+    .command("sync")
+    .description("Sync every enabled service, or one")
+    .argument("[service]", "Only this service, like jira")
+    .addHelpText("after", details("One service failing never stops the others. Review the changes before committing them."))
+    .action(async (service: string | undefined) => {
+      const { runSync } = await import("./commands/sync.ts");
+      await runSync(registry, out, service);
+    });
+
+  const day = program.command("day").description("Start and end the working day");
+
+  day
+    .command("start")
+    .description("Update the code and every service, then write snapshot.md")
+    .option("--no-sync", "Only rewrite snapshot.md from what's on disk")
+    .addHelpText(
+      "after",
+      details(`
+Fetches the code and fast-forwards the base branch when that's safe, syncs every enabled
+service, then writes snapshot.md: the last session's next steps, the tasks in flight, and
+what each service has to say. A step that fails doesn't stop the others.`),
+    )
+    .action(async (options: { sync?: boolean }) => {
+      const { runDayStart } = await import("./commands/day.ts");
+      await runDayStart(registry, out, { sync: options.sync !== false });
+    });
+
+  day
+    .command("end")
+    .description("Save the day's sessions and update the day summary")
+    .option("--date <date>", "Summarise another day (YYYY-MM-DD)")
+    .addHelpText(
+      "after",
+      details(`
+Saves the transcripts of sessions not saved yet, including ones that were killed, then
+rebuilds work-sessions/<date>/summary.md. Its facts are rebuilt each run; the sections
+you write (What happened, Decisions, Next steps, Blocked) are kept.`),
+    )
+    .action(async (options: { date?: string }) => {
+      const { runDayEnd } = await import("./commands/day.ts");
+      await runDayEnd(registry, out, options);
+    });
+
+  program
+    .command("check")
+    .description("Show whether an agent may run a command, without running it")
+    .argument("<command...>", 'The command, like "gh pr merge 12". Quote it if it has |, ; or &')
+    .allowUnknownOption()
+    .addHelpText(
+      "after",
+      details(`
+Hooks run this check before each shell command an agent runs, in Copilot CLI and Claude
+Code. Commands that only read run; commands that change a service ask the person first;
+anything the check can't follow asks too. Commands it doesn't know are left to your tool.
+
+Change the defaults in policy.json, in your dev config folder:
+
+  {
+    "read": "allow",
+    "change": "ask",
+    "unknown": "ask",
+    "commands": { "gh pr create": "allow", "gh pr merge": "deny" }
+  }
+
+Each value is allow, ask or deny, and the longest matching command wins. "gh auth token"
+is denied unless you change it. Help is always a read.
+
+This is a guardrail, not a security boundary: an agent runs as you.`),
+    )
+    .action(async (words: string[]) => {
+      const { runCheck } = await import("./commands/hook.ts");
+      runCheck(registry, out, words);
+    });
+
+  const hook = program.command("hook").description("Run by tool hooks, not by hand");
+  for (const [name, description, run] of [
+    ["session-start", "Add the workspace's context to a new session", "runSessionStart"],
+    ["session-end", "Save the session when it ends", "runSessionEnd"],
+    ["pre-tool", "Check an agent's command before it runs", "runPreTool"],
+  ] as const) {
+    hook
+      .command(name)
+      .description(description)
+      .option("--tool <tool>", "The tool running the hook: claude or copilot", "claude")
+      .action(async (options: { tool: string }) => {
+        const module = await import("./commands/hook.ts");
+        try {
+          await module[run](registry, options.tool);
+        } catch {
+          // A hook must never fail a session.
+          if (name !== "session-end") console.log("{}");
+        }
+      });
+  }
+
+  for (const entry of registry.services()) addServiceCommands(program, entry, registry, out);
 
   return program;
 }

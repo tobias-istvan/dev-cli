@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 2a complete (GitHub versioning, login, init). Open questions are at the end.
+Status: phase 2 complete (GitHub versioning and PR review, init, tasks, the day, sessions, hooks, command check). Open questions are at the end.
 
 ## Goals
 
@@ -159,6 +159,7 @@ block.
 | `dev task start <ref>` | Fetch the item and what it links to, create the worktree and notes |
 | `dev task status [id]`, `dev task cleanup` | What's in flight; which worktrees can go |
 | `dev check "<command>"` | What the command check decides, without running anything |
+| `dev github prs`, `dev github pr <N>` | Find and pull the PRs to review; pull one PR |
 | `dev <service> <action>` | Each service's own commands, like `dev jira pull ABC-1` or `dev confluence scope` |
 | `dev hook <event>` | Run by tool hooks |
 
@@ -222,6 +223,18 @@ CLIs it knows, for every plugin. Reads run, changes ask the
 person, anything that can't be followed asks, and commands no plugin knows are left to the
 tool. Plugins' own `dev` subcommands are covered the same way, from their read or change
 marks.
+
+The person's decisions live in `policy.json` in the dev config folder: `read`, `change`
+and `unknown` defaults, plus per-command rules like `"gh pr create": "allow"`, where the
+longest match wins. `gh auth token` is denied by default because it prints a token, and
+help is always a read.
+
+## Following references
+
+A service's links capability recognises its own references in any text. When one service
+finds text that may point elsewhere, like a PR's title and description, the core asks every
+enabled service and fetches what they recognise. That is how a PR pulls in its ticket and a
+task's brief links to its specs, without any service knowing about the others.
 
 ## Agents and tools
 

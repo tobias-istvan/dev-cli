@@ -25,9 +25,9 @@ interface Row {
   link: string;
 }
 
-function markdownFiles(folder: string): string[] {
+function markdownFiles(folder: string, include: (file: string) => boolean): string[] {
   return readdirSync(folder, { recursive: true, encoding: "utf8" })
-    .filter((file) => file.endsWith(".md") && path.basename(file) !== INDEX_FILE)
+    .filter((file) => file.endsWith(".md") && path.basename(file) !== INDEX_FILE && include(file.split(path.sep).join("/")))
     .filter((file) => !file.split(path.sep).some((part) => part.startsWith(".")))
     .sort();
 }
@@ -42,11 +42,12 @@ function cell(value: string): string {
   return value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
 }
 
-export function buildIndex(folder: string, title: string): IndexResult {
+/** `include` limits which Markdown files are items, like only each PR's pr-description.md. */
+export function buildIndex(folder: string, title: string, include: (file: string) => boolean = () => true): IndexResult {
   const rows: Row[] = [];
   const skipped: IndexResult["skipped"] = [];
 
-  for (const file of markdownFiles(folder)) {
+  for (const file of markdownFiles(folder, include)) {
     const { data } = splitFrontMatter(readFileSync(path.join(folder, file), "utf8"));
     const missing = missingFields(data);
     if (missing.length > 0 || !data) {

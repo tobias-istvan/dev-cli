@@ -52,6 +52,12 @@ export interface ServiceContext extends PluginContext {
   scope: Scope;
   /** The saved credentials for this plugin. Throws a clear error when not logged in. */
   credentials(): Credentials;
+  /**
+   * Finds references to other enabled services' items in text, like a ticket key in a
+   * PR's title, and fetches the ones not already in the workspace. Returns each with its
+   * file relative to the workspace root, when it could be fetched.
+   */
+  references(text: string): Promise<Array<{ reference: Reference; file: string | null }>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +239,11 @@ export interface Service {
   doctor?(context: ServiceContext): Promise<Problem[]>;
   /** Only for the versioning role. */
   versioning?: VersioningCapability;
+  /**
+   * Where this service's items are and which files they are, for its index.md. A
+   * connected service defaults to its own folder and every Markdown file in it.
+   */
+  index?: { folder: string; title: string; include?: (file: string) => boolean };
 }
 
 /** A service together with the plugin that offers it. */
