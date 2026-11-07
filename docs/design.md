@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 4 complete (GitHub Issues as a second task source). Open questions are at the end.
+Status: phase 5 in progress: Figma done. Open questions are at the end.
 
 ## Goals
 
@@ -298,6 +298,27 @@ task's brief links to its specs, without any service knowing about the others.
 Rules every agent follows, written into `AGENTS.md`: never push or open a PR unless asked in
 the session, no other writes to a service unless asked each time, never handle credentials,
 never commit sync output, read indexes before files.
+
+## Figma
+
+Figma records the designs that tasks and PRs link to, as `figma/<fileKey>-<nodeId>/design.md`:
+which file and frame, and how to read it through the Figma desktop app's local MCP server.
+Agents read designs there, never from the web link. The workspace's MCP config points at
+the local server.
+
+A login is optional. Not everyone will create a token, so the plugin works without one,
+doing less.
+
+Each sync fingerprints every recorded frame's content and records when it changed:
+
+- **With a personal access token** (read-only file content), through Figma's REST API: one
+  request per file, for any file, without Figma desktop running.
+- **Without one**, through the local MCP server, if Figma desktop is running. That server
+  reads whichever file is open and can't say which, so a frame only counts when its name
+  matches the one recorded earlier. Frames in files that aren't open are skipped, and said so.
+
+Fingerprints from the two methods aren't compared with each other: switching methods
+starts a new baseline. Designs that changed in the last week appear in the snapshot.
 
 ## What phase 4 taught the interface
 

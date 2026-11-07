@@ -208,6 +208,9 @@ test("credentials are stored per plugin, readable only by the owner, and the env
     process.env.DEV_EXAMPLE_TOKEN = "from-env";
     assert.equal(loadCredentials("example")?.credentials.token, "from-env");
     delete process.env.DEV_EXAMPLE_TOKEN;
+    process.env.DEV_EXAMPLE_API_URL = "http://localhost:1";
+    assert.equal(loadCredentials("example")?.credentials.api_url, undefined, "an address setting isn't a credential");
+    delete process.env.DEV_EXAMPLE_API_URL;
 
     assert.equal(looseWarning("example"), null);
     chmodSync(path.join(dir, "example.json"), 0o644);

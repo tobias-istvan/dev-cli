@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import atlassian from "./atlassian/index.ts";
+import figma from "./figma/index.ts";
 import github from "./github/index.ts";
 import type { Plugin, Problem, ServiceEntry } from "./types.ts";
 
@@ -11,7 +12,7 @@ import type { Plugin, Problem, ServiceEntry } from "./types.ts";
  * credentials, like any plugin.
  */
 
-const BUILT_IN: Plugin[] = [github, atlassian];
+const BUILT_IN: Plugin[] = [github, atlassian, figma];
 
 export class Registry {
   readonly plugins: Plugin[];

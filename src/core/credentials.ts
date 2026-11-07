@@ -11,7 +11,7 @@ import { configDir } from "./paths.ts";
  *   { "default": "<account>", "accounts": { "<account>": { ...values } } }
  *
  * Environment variables override stored values for the default account, for scripts:
- * DEV_<PLUGIN>_<KEY>, like DEV_ATLASSIAN_TOKEN.
+ * DEV_<PLUGIN>_<KEY>, like DEV_ATLASSIAN_TOKEN. Names ending in _URL are settings, not credentials.
  */
 
 interface CredentialFile {
@@ -74,7 +74,8 @@ function fromEnvironment(plugin: string): Credentials {
   const prefix = `DEV_${plugin.toUpperCase().replace(/-/g, "_")}_`;
   const values: Credentials = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith(prefix) && value) values[key.slice(prefix.length).toLowerCase()] = value;
+    // Settings like DEV_GITHUB_API_URL say where a service is, not who you are.
+    if (key.startsWith(prefix) && value && !key.endsWith("_URL")) values[key.slice(prefix.length).toLowerCase()] = value;
   }
   return values;
 }

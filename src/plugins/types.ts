@@ -88,6 +88,8 @@ export interface LoginStatus {
 
 export interface Login {
   methods: LoginMethod[];
+  /** The plugin works without a login, doing less. Offered at setup, never required. */
+  optional?: { benefit: string };
   /** Asks the person for what the method needs and returns credentials to store. */
   login(
     context: PluginContext,

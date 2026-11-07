@@ -77,7 +77,8 @@ export async function doctor(root: string, registry: Registry, out: Output, opti
 
     const saved = loadCredentials(plugin.name);
     if (!saved) {
-      problems.push({ message: `You're not logged in to ${plugin.title}.`, fix: `Run "dev login ${plugin.name}" yourself.` });
+      if (plugin.login.optional) notes.push(`${plugin.title}: no login, which is fine. With one, ${plugin.login.optional.benefit}.`);
+      else problems.push({ message: `You're not logged in to ${plugin.title}.`, fix: `Run "dev login ${plugin.name}" yourself.` });
       continue;
     }
     if (options.offline) continue;

@@ -3,7 +3,7 @@ import type { LoginMethod, Output, Plugin } from "../plugins/types.ts";
 import { pluginContext } from "../core/context.ts";
 import { listAccounts, loadCredentials, removeCredentials, saveCredentials } from "../core/credentials.ts";
 import { DevError } from "../core/output.ts";
-import { choose } from "../core/prompt.ts";
+import { choose, confirm } from "../core/prompt.ts";
 import { findWorkspaceRoot } from "../core/workspace.ts";
 
 export interface LoginOptions {
@@ -52,6 +52,14 @@ export async function ensureLogin(plugin: Plugin, out: Output, options: LoginOpt
   if (saved) {
     out.info(`${plugin.title}: using the saved login${saved.account ? ` for ${saved.account}` : ""}.`);
     return;
+  }
+  const optional = plugin.login.optional;
+  if (optional) {
+    const interactive = process.stdin.isTTY && process.stdout.isTTY;
+    if (!interactive || !(await confirm(`Log in to ${plugin.title}? It's optional: ${optional.benefit}`, "a terminal", false))) {
+      out.info(`${plugin.title}: skipped the login. With one, ${optional.benefit}. Log in any time with "dev login ${plugin.name}".`);
+      return;
+    }
   }
   await login(plugin, out, options);
 }
