@@ -183,7 +183,7 @@ test("init refuses to nest a workspace, and names unknown services", () => {
 
   const unknown = dev(folder(), ["init", "--versioning", "notes", "--repo", "x/y"], { DEV_EXAMPLE_TOKEN: "good" });
   assert.equal(unknown.code, 1);
-  assert.match(unknown.err, /"notes" isn't a versioning service\.\nFix: Use one of: github:github, example:code/);
+  assert.match(unknown.err, /"notes" isn't a versioning service\.\nFix: Use one of: github:github, gitlab:gitlab, example:code/);
 });
 
 test("a failed clone keeps the setup and says how to retry", () => {

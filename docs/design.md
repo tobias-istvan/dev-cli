@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 5 in progress: Figma done. Open questions are at the end.
+Status: phase 5 in progress: Figma and GitLab done. Open questions are at the end.
 
 ## Goals
 
@@ -319,6 +319,18 @@ Each sync fingerprints every recorded frame's content and records when it change
 
 Fingerprints from the two methods aren't compared with each other: switching methods
 starts a new baseline. Designs that changed in the last week appear in the snapshot.
+
+## GitLab
+
+GitLab works on gitlab.com or a self-hosted server: the login asks for the server and a
+personal access token with the `read_api` scope. Its versioning service lists projects,
+clones (over HTTPS with the token for that one clone, or over SSH with `--clone-url`) and
+pulls merge requests to review into `merge-requests/<N>/`. GitLab Issues is a task source,
+like Jira and GitHub Issues, in `gitlab-issues/<group>-<project>-<N>/issue.md`. The command
+check knows `glab` as it knows `gh`.
+
+Only projects the workspace knows count as GitLab issue references, so `owner/name#12`
+isn't claimed by GitLab when it means a GitHub issue.
 
 ## What phase 4 taught the interface
 

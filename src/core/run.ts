@@ -10,13 +10,14 @@ export function runVisibly(file: string, args: string[], options: { cwd?: string
 }
 
 /** Clones with git, giving it a token only for this one command, through the environment. */
-export function gitClone(url: string, target: string, token?: string): Promise<boolean> {
+export function gitClone(url: string, target: string, token?: string, username = "x-access-token"): Promise<boolean> {
   if (!token) return runVisibly("git", ["clone", url, target]);
 
   // An inline credential helper reads the token from the environment, so it never appears
-  // in the command line or in the clone's saved config.
-  const helper = '!f() { echo username=x-access-token; echo "password=$DEV_CLONE_TOKEN"; }; f';
+  // in the command line or in the clone's saved config. GitHub expects the username
+  // x-access-token; GitLab expects oauth2.
+  const helper = '!f() { echo "username=$DEV_CLONE_USER"; echo "password=$DEV_CLONE_TOKEN"; }; f';
   return runVisibly("git", ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "clone", url, target], {
-    env: { ...process.env, DEV_CLONE_TOKEN: token, GIT_TERMINAL_PROMPT: "0" },
+    env: { ...process.env, DEV_CLONE_TOKEN: token, DEV_CLONE_USER: username, GIT_TERMINAL_PROMPT: "0" },
   });
 }
