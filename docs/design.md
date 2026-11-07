@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 1 complete. Open questions are at the end.
+Status: phase 2a complete (GitHub versioning, login, init). Open questions are at the end.
 
 ## Goals
 
@@ -42,7 +42,8 @@ Status: phase 1 complete. Open questions are at the end.
 
 A plugin with several services shares one login across them. Atlassian offers Jira and
 Confluence; GitHub offers versioning, Issues and Projects. A team that hosts code on GitHub
-but tracks work in Jira enables only `github:versioning` and `atlassian:jira`.
+but tracks work in Jira enables only `github:github` (its versioning service) and
+`atlassian:jira`.
 
 ## Folder layout
 
@@ -98,7 +99,7 @@ Committed with the workspace, so a team shares one setup. It never holds credent
 ```yaml
 version: 1
 versioning:
-  service: github:versioning
+  service: github:github
   repo: acme/web
 services:
   - service: atlassian:jira
@@ -121,6 +122,11 @@ Per person, outside every workspace, in `$XDG_CONFIG_HOME/dev/` (default `~/.con
   The folder is owner-only (700) and the file too (600). Writes go through a temporary
   file, so a crash never leaves half a file
 - `policy.json`: the command check's decisions (see Command check)
+
+A plugin can also borrow another tool's login instead of storing a secret. The GitHub
+plugin's `cli` method saves only the name of a `gh` account, and asks `gh auth token
+--user <account>` for its token each time. That works with several `gh` accounts, whichever
+is active.
 
 An OS keychain can come later behind the same interface. For scripts, environment
 variables named `DEV_<PLUGIN>_<KEY>`, like `DEV_ATLASSIAN_TOKEN`, override the default

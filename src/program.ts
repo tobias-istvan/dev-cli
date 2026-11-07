@@ -21,6 +21,15 @@ export interface ProgramOptions {
   out: Output;
 }
 
+interface InitOptionsFlags {
+  versioning?: string;
+  repo?: string;
+  cloneUrl?: string;
+  clone?: boolean;
+  service?: string[];
+  account?: string;
+}
+
 function version(): string {
   const file = path.join(packageDir(), "package.json");
   return (JSON.parse(readFileSync(file, "utf8")) as { version: string }).version;
@@ -107,6 +116,67 @@ export function buildProgram({ registry, out }: ProgramOptions): Command {
     .helpCommand(false)
     .showHelpAfterError("(add --help to see the options)")
     .addHelpText("after", details("Run any command with --help to see what it does. Asking for help never changes anything."));
+
+  program
+    .command("init")
+    .description("Set up a workspace for one repository, in this folder or the one you name")
+    .argument("[folder]", "Where to set it up, created if needed (default: this folder)")
+    .option("--versioning <service>", "Where the code is hosted, like github")
+    .option("--repo <name>", "The repository, like owner/name")
+    .option("--clone-url <url>", "Clone from this URL instead, like an SSH address")
+    .option("--no-clone", "Don't clone the repository")
+    .option("--service <services...>", "Connected services to add, like jira confluence")
+    .option("--account <name>", "Which gh account to use, when logging in through gh")
+    .addHelpText(
+      "after",
+      details(`
+Asks where the code is hosted, logs you in, lets you pick the repository and the other
+services the team uses, then writes dev.yaml and the workspace's files and clones the
+code into repository/.
+
+Every question has a flag, for scripts. It's safe to run again: it keeps what dev.yaml
+already says, offers what's missing, and never overwrites a file you've edited. It never
+commits or pushes.
+
+Examples:
+  dev init
+  dev init ~/projects/web
+  dev init --versioning github --repo acme/web --clone-url git@github.com:acme/web.git`),
+    )
+    .action(async (folder: string | undefined, options: InitOptionsFlags) => {
+      const { runInit } = await import("./commands/init.ts");
+      await runInit(program, registry, out, folder, { ...options, clone: options.clone !== false });
+    });
+
+  program
+    .command("login")
+    .description("Log in to a plugin's services (people only, not agents)")
+    .argument("<plugin>", "Like github")
+    .option("--method <method>", "How to log in, like cli or token")
+    .option("--account <name>", "Which account, when logging in through another tool like gh")
+    .addHelpText(
+      "after",
+      details(`
+Saves the login on this machine only, outside every workspace, readable only by you.
+With the cli method, dev borrows another tool's login, like gh's, and stores nothing
+secret.
+
+This needs a person at a terminal, so it refuses to run for agents and scripts.`),
+    )
+    .action(async (name: string, options: { method?: string; account?: string }) => {
+      const { runLogin } = await import("./commands/login.ts");
+      await runLogin(registry, out, name, options);
+    });
+
+  program
+    .command("logout")
+    .description("Remove a plugin's saved login")
+    .argument("<plugin>", "Like github")
+    .option("--account <name>", "Only this account")
+    .action(async (name: string, options: { account?: string }) => {
+      const { runLogout } = await import("./commands/login.ts");
+      await runLogout(registry, out, name, options);
+    });
 
   program
     .command("doctor")

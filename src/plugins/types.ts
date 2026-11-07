@@ -58,7 +58,8 @@ export interface ServiceContext extends PluginContext {
 // Plugin level
 
 export interface LoginMethod {
-  kind: "oauth" | "token";
+  /** "cli" reuses another tool's login, like gh's, so nothing secret is stored. */
+  kind: "oauth" | "token" | "cli";
   /** Shown when choosing between methods, like "Personal access token". */
   title: string;
 }
@@ -73,7 +74,11 @@ export interface LoginStatus {
 export interface Login {
   methods: LoginMethod[];
   /** Asks the person for what the method needs and returns credentials to store. */
-  login(context: PluginContext, method: LoginMethod["kind"]): Promise<{ account: string; credentials: Credentials }>;
+  login(
+    context: PluginContext,
+    method: LoginMethod["kind"],
+    options: { account?: string },
+  ): Promise<{ account: string; credentials: Credentials }>;
   /** Checks stored credentials still work. Must not change anything. */
   check(context: PluginContext, credentials: Credentials): Promise<LoginStatus>;
   /** Revokes anything on the service side, if the method allows. Stored values are removed by the core. */
@@ -201,8 +206,15 @@ export interface AgentFiles {
 }
 
 export interface VersioningCapability {
+  /** The repositories the account can see, most recently changed first. */
   listRepositories(context: PluginContext, credentials: Credentials): Promise<Array<{ id: string; description?: string }>>;
+  /** Where a repository is cloned from, for messages. */
   cloneUrl(repository: string): string;
+  /**
+   * Clones into `target`, showing git's own progress. `url` overrides the default, for
+   * people who clone over SSH. Credentials must not end up in the clone's config.
+   */
+  clone(context: PluginContext, credentials: Credentials, repository: string, target: string, url?: string): Promise<boolean>;
 }
 
 export interface Service {

@@ -1,4 +1,5 @@
 import { pathToFileURL } from "node:url";
+import github from "./github/index.ts";
 import type { Plugin, Problem, ServiceEntry } from "./types.ts";
 
 /**
@@ -9,7 +10,7 @@ import type { Plugin, Problem, ServiceEntry } from "./types.ts";
  * credentials, like any plugin.
  */
 
-const BUILT_IN: Plugin[] = [];
+const BUILT_IN: Plugin[] = [github];
 
 export class Registry {
   readonly plugins: Plugin[];

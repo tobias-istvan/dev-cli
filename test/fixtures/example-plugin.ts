@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
+import { gitClone } from "../../src/core/run.ts";
 import type { Plugin } from "../../src/plugins/types.ts";
 
 /**
@@ -32,6 +33,7 @@ const plugin: Plugin = {
       versioning: {
         listRepositories: async () => [{ id: "acme/web" }],
         cloneUrl: (repository) => `https://example.test/${repository}.git`,
+        clone: (_context, _credentials, repository, target, url) => gitClone(url ?? `https://example.test/${repository}.git`, target),
       },
     },
     {
