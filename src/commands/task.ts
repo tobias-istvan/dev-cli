@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { Registry } from "../plugins/registry.ts";
-import type { Output, Reference, ServiceEntry, TaskContext } from "../plugins/types.ts";
+import type { Output, Reference, ServiceEntry, TaskContext, TaskItem } from "../plugins/types.ts";
 import { workspaceServiceContext } from "../core/context.ts";
 import { DevError } from "../core/output.ts";
 import { loadConfig, type ProjectConfig } from "../core/project-config.ts";
@@ -73,7 +73,7 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   const copies = await copyLocalFiles(repo, worktree.path, config.conventions.worktreeFiles ?? []);
 
   const template = [".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md", "PULL_REQUEST_TEMPLATE.md"].find((f) => existsSync(path.join(repo, f))) ?? null;
-  const notes = await writeTaskNotes(root, { id, title, branch: worktree.branch, sources: resolved?.context.files ?? [], prTemplate: template });
+  const notes = await writeTaskNotes(root, { id, title, branch: worktree.branch, sources: resolved?.context.files ?? [], prTemplate: template, notFetched: resolved?.context.notFetched ?? [] });
 
   out.info(resolved ? `${resolved.entry.service.title}: ${title}` : `Task: ${title}`);
   out.info(`Worktree: worktrees/${id} on ${worktree.branch}${worktree.existed ? ", already there and left as it was" : `, from ${worktree.base}`}`);
@@ -143,4 +143,61 @@ export async function runTaskCleanup(out: Output, options: { remove?: boolean })
     await removeWorktree(root, state);
     out.info(`Removed worktrees/${state.id}. Its notes in tasks/${state.id}/ stay.`);
   }
+}
+
+export interface ListOptions {
+  mine?: boolean;
+  all?: boolean;
+  refresh?: boolean;
+  json?: boolean;
+}
+
+/**
+ * The tasks from every task source, from the files the last sync wrote. By default: open
+ * tasks in scope, and open ones assigned to you even if they were fetched as context.
+ */
+export async function runTaskList(registry: Registry, out: Output, options: ListOptions): Promise<void> {
+  const root = requireWorkspaceRoot();
+  const config = loadConfig(root);
+  const sources = enabledServices(config, registry).filter((entry) => entry.service.tasks);
+  if (sources.length === 0) {
+    out.info('No enabled service holds tasks. Add one, like "dev add jira".');
+    return;
+  }
+
+  if (options.refresh) {
+    const { syncServices } = await import("./sync.ts");
+    await syncServices(root, config, registry, out, sources);
+  }
+
+  const groups: Array<{ title: string; tasks: TaskItem[]; asOf: string | null }> = [];
+  for (const entry of sources) {
+    const all = await entry.service.tasks!.list(workspaceServiceContext(root, entry, config, registry, out));
+    const tasks = all
+      .filter((task) => options.all || !task.done)
+      .filter((task) => (options.mine ? task.mine : options.all || task.inScope || task.mine))
+      .sort((a, b) => Number(b.mine) - Number(a.mine) || (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.id.localeCompare(b.id, undefined, { numeric: true }));
+    const asOf = all.map((task) => task.synced ?? "").sort().at(-1) || null;
+    groups.push({ title: entry.service.title, tasks, asOf });
+  }
+
+  if (options.json) {
+    console.log(JSON.stringify(groups.map((g) => ({ service: g.title, asOf: g.asOf, tasks: g.tasks })), null, 2));
+    return;
+  }
+
+  const today = new Date().toLocaleDateString("en-CA");
+  for (const group of groups) {
+    const when = group.asOf ? new Date(group.asOf).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "never synced";
+    out.info(`${group.title}, as of ${when}: ${group.tasks.length} task${group.tasks.length === 1 ? "" : "s"}`);
+    for (const task of group.tasks) {
+      const notes = [
+        ...(task.due ? [`due ${task.due}${task.due < today && !task.done ? ", overdue" : task.due === today ? ", today" : ""}`] : []),
+        ...(task.mine ? ["mine"] : []),
+        ...(task.via !== "scope" ? [task.via] : []),
+      ];
+      out.info(`  ${task.id}  [${task.status}]  ${task.title}${notes.length > 0 ? `  · ${notes.join(" · ")}` : ""}  (${task.file})`);
+    }
+  }
+  if (!options.refresh) out.info('From the last sync. Add --refresh to sync first.');
 }

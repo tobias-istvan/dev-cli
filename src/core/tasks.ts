@@ -32,13 +32,19 @@ export interface BriefContext {
   sources: string[];
   /** Whether the code repository has a PR template. */
   prTemplate: string | null;
+  /** Links outside the scope, not fetched. */
+  notFetched?: string[];
 }
 
 function brief(context: BriefContext): string {
   const sources =
     context.sources.length > 0
-      ? context.sources.map((file) => `- [${path.basename(file)}](${path.posix.relative(`tasks/${context.id}`, file.split(path.sep).join("/"))})`).join("\n")
+      ? context.sources.map((file) => `- [${file.split(path.sep).join("/")}](${path.posix.relative(`tasks/${context.id}`, file.split(path.sep).join("/"))})`).join("\n")
       : "_None found. Add links to the ticket, specs and designs this task needs._";
+  const outside =
+    context.notFetched && context.notFetched.length > 0
+      ? `\n\nOutside this workspace's scope, so not fetched. Open them yourself if needed:\n\n${context.notFetched.map((link) => `- ${link}`).join("\n")}`
+      : "";
 
   const prDescription = context.prTemplate
     ? `following the repository's own template at \`repository/${context.prTemplate}\`, with the same headings`
@@ -58,7 +64,7 @@ worktree: ${JSON.stringify(`worktrees/${context.id}`)}
 
 ## Sources
 
-${sources}
+${sources}${outside}
 
 ## What we're building
 

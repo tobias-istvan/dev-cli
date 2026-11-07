@@ -102,7 +102,7 @@ export function generatedFiles(config: ProjectConfig, registry: Registry, comman
       folders: connected
         .map(({ service }) => `| \`${service.id}/\` | ${cell(service.title)}: ${cell(service.description)}. Start at its \`index.md\` |`)
         .join("\n"),
-      rules: rules.length > 0 ? rules.map((rule, i) => `${i + 6}. ${rule}`).join("\n") + "\n" : "",
+      rules: rules.length > 0 ? rules.map((rule, i) => `${i + 7}. ${rule}`).join("\n") + "\n" : "",
       commands: commands.map((row) => `| \`${row.command}\` | ${cell(row.does)} |`).join("\n"),
       skills: skills.map((skill) => `| \`.github/skills/${skill.name}/SKILL.md\` | ${cell(skill.description)} |`).join("\n"),
     }),
@@ -134,7 +134,7 @@ export function generatedFiles(config: ProjectConfig, registry: Registry, comman
         hooks: {
           SessionStart: [{ hooks: [{ type: "command", command: guard("session-start --tool claude", true), timeout: 15 }] }],
           SessionEnd: [{ hooks: [{ type: "command", command: guard("session-end --tool claude >> .dev/state/hooks.log 2>&1", true), timeout: 60 }] }],
-          PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: guard("pre-tool --tool claude"), timeout: 10 }] }],
+          PreToolUse: [{ matcher: "Bash|Edit|Write|MultiEdit|NotebookEdit", hooks: [{ type: "command", command: guard("pre-tool --tool claude"), timeout: 10 }] }],
         },
       },
       null,

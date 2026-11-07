@@ -1,16 +1,17 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import type { Reference, Scope, Service, ServiceContext, SyncReport } from "../types.ts";
-import { splitFrontMatter, writeItem } from "../../core/front-matter.ts";
+import { splitFrontMatter, updateFields, writeItem, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError } from "../../core/output.ts";
+import { DevError, OutsideScope } from "../../core/output.ts";
 import { ask, choose, search as searchPrompt } from "../../core/prompt.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { htmlToMarkdown } from "./html.ts";
 
 /**
- * Jira: the tickets in scope, one Markdown file each as jira/<KEY>.md. The scope is a JQL
+ * Jira: the tickets in scope, each in its own folder as jira/<KEY>/ticket.md, so research notes
+ * or images can sit beside it and are never touched by a sync. The scope is a JQL
  * search. Tickets fetched on demand, like a parent or one named in a PR, are kept too,
  * marked as outside the scope, so a sync never removes them.
  */
@@ -26,7 +27,7 @@ interface Issue {
     status?: { name?: string; statusCategory?: { key?: string } };
     issuetype?: { name?: string };
     priority?: { name?: string };
-    assignee?: { displayName?: string } | null;
+    assignee?: { displayName?: string; accountId?: string } | null;
     reporter?: { displayName?: string } | null;
     created?: string;
     updated?: string;
@@ -54,8 +55,19 @@ function folder(context: ServiceContext): string {
   return context.folder ?? path.join(context.root, "jira");
 }
 
+const TICKET = "ticket.md";
+
 function file(context: ServiceContext, key: string): string {
-  return path.join(folder(context), `${key}.md`);
+  return path.join(folder(context), key, TICKET);
+}
+
+/** Moves a ticket from the earlier flat layout, jira/<KEY>.md, into its folder. */
+async function migrate(context: ServiceContext, key: string): Promise<void> {
+  const flat = path.join(folder(context), `${key}.md`);
+  if (existsSync(flat) && !existsSync(file(context, key))) {
+    await mkdir(path.dirname(file(context, key)), { recursive: true });
+    await rename(flat, file(context, key));
+  }
 }
 
 async function search(api: AtlassianClient, jql: string, fields: string[]): Promise<Issue[]> {
@@ -74,11 +86,14 @@ async function search(api: AtlassianClient, jql: string, fields: string[]): Prom
   return issues;
 }
 
-/** Custom fields differ per site, so they're found by name. */
-async function customFields(api: AtlassianClient): Promise<{ acceptance: string | null; points: string | null }> {
-  const fields = await api.get<Array<{ id: string; name: string }>>("/rest/api/3/field");
+/** Custom fields differ per site, so they're found by name. And who's running dev. */
+async function lookups(api: AtlassianClient): Promise<Lookups> {
+  const [fields, me] = await Promise.all([
+    api.get<Array<{ id: string; name: string }>>("/rest/api/3/field"),
+    api.get<{ accountId?: string }>("/rest/api/3/myself").catch(() => ({ accountId: undefined })),
+  ]);
   const find = (pattern: RegExp) => fields.find((f) => pattern.test(f.name))?.id ?? null;
-  return { acceptance: find(/^acceptance criteria$/i), points: find(/^story point(s| estimate)$/i) };
+  return { acceptance: find(/^acceptance criteria$/i), points: find(/^story point(s| estimate)$/i), me: me.accountId ?? null };
 }
 
 function branchType(issueType: string): string {
@@ -88,7 +103,14 @@ function branchType(issueType: string): string {
 }
 
 /** Renders one issue. Related issues link to their local file when it's there, else to Jira. */
-async function render(context: ServiceContext, api: AtlassianClient, issue: Issue, ids: { acceptance: string | null; points: string | null }, inScope: boolean): Promise<"added" | "updated" | "unchanged"> {
+interface Lookups {
+  acceptance: string | null;
+  points: string | null;
+  /** The account running dev, to mark tickets assigned to them. */
+  me: string | null;
+}
+
+async function render(context: ServiceContext, api: AtlassianClient, issue: Issue, ids: Lookups, via: Via): Promise<"added" | "updated" | "unchanged"> {
   const f = issue.fields;
   const rendered = issue.renderedFields ?? {};
   const html = (value: unknown) => (typeof value === "string" ? value : "");
@@ -96,7 +118,7 @@ async function render(context: ServiceContext, api: AtlassianClient, issue: Issu
   const acceptance = ids.acceptance ? htmlToMarkdown(html(rendered[ids.acceptance])) : "";
   const points = ids.points && typeof f[ids.points] === "number" ? (f[ids.points] as number) : null;
 
-  const link = (key: string) => (existsSync(file(context, key)) ? `[${key}](${key}.md)` : `[${key}](${api.browseUrl(key)})`);
+  const link = (key: string) => (existsSync(file(context, key)) ? `[${key}](../${key}/${TICKET})` : `[${key}](${api.browseUrl(key)})`);
   const relations = [
     ...(f.parent ? [`- Parent (${f.parent.fields?.issuetype?.name ?? "issue"}): ${link(f.parent.key)} ${f.parent.fields?.summary ?? ""}`] : []),
     ...(f.subtasks ?? []).map((t) => `- Sub-task: ${link(t.key)} [${t.fields?.status?.name ?? "?"}] ${t.fields?.summary ?? ""}`),
@@ -153,10 +175,12 @@ async function render(context: ServiceContext, api: AtlassianClient, issue: Issu
       statusCategory: f.status?.statusCategory?.key ?? "",
       priority: f.priority?.name ?? "",
       assignee: f.assignee?.displayName ?? "",
+      mine: Boolean(ids.me && f.assignee?.accountId === ids.me),
       due: f.duedate ?? "",
       points,
       labels: f.labels ?? [],
-      inScope,
+      inScope: via === "scope",
+      via,
     },
     body,
   );
@@ -169,16 +193,20 @@ async function fetchIssue(api: AtlassianClient, key: string): Promise<Issue> {
 async function localItems(context: ServiceContext): Promise<Array<{ key: string; data: Record<string, unknown> }>> {
   if (!existsSync(folder(context))) return [];
   const items: Array<{ key: string; data: Record<string, unknown> }> = [];
-  for (const name of await readdir(folder(context))) {
-    if (!name.endsWith(".md") || name === "index.md") continue;
-    const { data } = splitFrontMatter(await readFile(path.join(folder(context), name), "utf8"));
-    if (data) items.push({ key: name.slice(0, -3), data });
+  for (const entry of await readdir(folder(context), { withFileTypes: true })) {
+    // Tickets from the earlier flat layout move into their folders first.
+    if (entry.isFile() && /^[A-Z][A-Z0-9]{1,9}-\d+\.md$/.test(entry.name)) await migrate(context, entry.name.slice(0, -3));
+  }
+  for (const entry of await readdir(folder(context), { withFileTypes: true })) {
+    if (!entry.isDirectory() || !existsSync(file(context, entry.name))) continue;
+    const { data } = splitFrontMatter(await readFile(file(context, entry.name), "utf8"));
+    if (data) items.push({ key: entry.name, data });
   }
   return items;
 }
 
 function index(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "Jira tickets");
+  if (existsSync(folder(context))) buildIndex(folder(context), "Jira tickets", (f) => path.posix.basename(f) === TICKET);
 }
 
 async function sync(context: ServiceContext): Promise<SyncReport> {
@@ -187,7 +215,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const api = client(context);
   const report: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
 
-  const [found, ids, local] = await Promise.all([search(api, jql, LIST_FIELDS), customFields(api), localItems(context)]);
+  const [found, ids, local] = await Promise.all([search(api, jql, LIST_FIELDS), lookups(api), localItems(context)]);
   const known = new Map(local.map((item) => [item.key, item.data]));
   const inScope = new Set(found.map((issue) => issue.key));
   const limit = limiter(4);
@@ -199,7 +227,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
         // Unchanged in Jira and already marked in scope: nothing to fetch.
         if (existing && existing.updated === summary.fields.updated && existing.inScope === true) return;
         try {
-          const result = await render(context, api, await fetchIssue(api, summary.key), ids, true);
+          const result = await render(context, api, await fetchIssue(api, summary.key), ids, "scope");
           if (result === "added") report.added++;
           else if (result === "updated") report.updated++;
         } catch (error) {
@@ -209,11 +237,24 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
     ),
   );
 
-  // Tickets that left the scope go. Ones fetched on demand were never in it, and stay.
+  // Tickets that left the scope stay, marked as outside it. Files are cheap, and history matters.
   for (const item of local) {
-    if (item.data.inScope === true && !inScope.has(item.key)) {
-      await rm(file(context, item.key), { force: true });
-      report.removed++;
+    if (item.data.inScope === true && !inScope.has(item.key) && (await updateFields(file(context, item.key), { inScope: false, via: "former" }))) report.removed++;
+  }
+
+  // Specs often live on the parent, not the ticket you're assigned, so open tickets' parents
+  // are kept too, within the scope.
+  const parents = new Set<string>();
+  for (const item of await localItems(context)) {
+    if (item.data.inScope === true && item.data.statusCategory !== "done" && typeof item.data.parent === "string") parents.add(item.data.parent);
+  }
+  for (const key of parents) {
+    if (existsSync(file(context, key))) continue;
+    try {
+      await render(context, api, await fetchIssue(api, key), ids, "parent");
+      report.added++;
+    } catch (error) {
+      if (!(error instanceof OutsideScope)) report.failed.push({ id: key, reason: `parent: ${(error as Error).message}` });
     }
   }
 
@@ -222,7 +263,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
 }
 
 function keysIn(text: string, scope: Scope): string[] {
-  const projects = Array.isArray(scope.projects) ? scope.projects.map(String) : typeof scope.project === "string" ? [scope.project] : [];
+  const projects = scopeProjects(scope);
   const keys = new Set<string>();
   for (const match of text.matchAll(KEY)) {
     // Without known projects, any KEY-123 counts; with them, lookalikes like UTF-8 don't.
@@ -231,12 +272,29 @@ function keysIn(text: string, scope: Scope): string[] {
   return [...keys];
 }
 
-async function fetchOne(context: ServiceContext, reference: Reference): Promise<string> {
+/** The scope's projects, when it names any. Only then can "outside the scope" be told for a key. */
+function scopeProjects(scope: Scope): string[] {
+  return Array.isArray(scope.projects) ? scope.projects.map(String) : typeof scope.project === "string" ? [scope.project] : [];
+}
+
+/** The more specific reason wins: an item in scope stays "scope", a parent stays "parent". */
+const RANK: Record<Via, number> = { scope: 4, parent: 3, pulled: 2, linked: 1, former: 0 };
+
+async function fetchOne(context: ServiceContext, reference: Reference, via: Via = "linked"): Promise<string> {
+  await migrate(context, reference.id);
+  const projects = scopeProjects(context.scope);
+  if (context.settings.fetch === "within-scope" && projects.length > 0 && !projects.includes(reference.id.split("-")[0] ?? "")) {
+    throw new OutsideScope(`Jira ticket ${reference.id}`);
+  }
   const api = client(context);
   const target = file(context, reference.id);
-  let inScope = false;
-  if (existsSync(target)) inScope = splitFrontMatter(await readFile(target, "utf8")).data?.inScope === true;
-  await render(context, api, await fetchIssue(api, reference.id), await customFields(api), inScope);
+  let reason = via;
+  if (existsSync(target)) {
+    const data = splitFrontMatter(await readFile(target, "utf8")).data;
+    const previous = (typeof data?.via === "string" ? data.via : data?.inScope === true ? "scope" : null) as Via | null;
+    if (previous && RANK[previous] > RANK[via]) reason = previous;
+  }
+  await render(context, api, await fetchIssue(api, reference.id), await lookups(api), reason);
   index(context);
   return target;
 }
@@ -295,6 +353,26 @@ export const jira: Service = {
 
   sync,
 
+  tasks: {
+    async list(context) {
+      // Every ticket in the workspace, in scope or fetched as a parent or link: an open one's
+      // references matter either way.
+      return (await localItems(context)).map((item) => ({
+          id: item.key,
+          title: String(item.data.title ?? ""),
+          status: String(item.data.status ?? ""),
+          done: item.data.statusCategory === "done",
+          mine: item.data.mine === true,
+          inScope: item.data.inScope === true,
+          via: typeof item.data.via === "string" ? item.data.via : item.data.inScope === true ? "scope" : "linked",
+          ...(typeof item.data.synced === "string" ? { synced: item.data.synced } : {}),
+          ...(typeof item.data.due === "string" && item.data.due ? { due: item.data.due } : {}),
+          file: `jira/${item.key}/${TICKET}`,
+          ...(typeof item.data.parent === "string" && existsSync(file(context, item.data.parent)) ? { related: [`jira/${item.data.parent}/${TICKET}`] } : {}),
+        }));
+    },
+  },
+
   links: {
     find(text, scope) {
       const keys = keysIn(text, scope).map((id) => ({ service: SERVICE, id }));
@@ -317,16 +395,20 @@ export const jira: Service = {
       // The spec often lives on the parent: fetch it, and follow its links too.
       if (typeof data?.parent === "string") {
         try {
-          const parent = await fetchOne(context, { service: SERVICE, id: data.parent });
+          const parent = await fetchOne(context, { service: SERVICE, id: data.parent }, "parent");
           files.push(path.relative(context.root, parent));
           text += `\n${splitFrontMatter(await readFile(parent, "utf8")).body}`;
         } catch (error) {
           context.out.warn(`Couldn't fetch the parent ${data.parent}: ${(error as Error).message}`);
         }
       }
-      for (const found of await context.references(text)) if (found.file) files.push(found.file);
+      const notFetched: string[] = [];
+      for (const found of await context.references(text)) {
+        if (found.file) files.push(found.file);
+        else if (found.outside) notFetched.push(found.reference.url ?? found.reference.id);
+      }
 
-      return { title: String(data?.title ?? reference.id), type: branchType(String(data?.type ?? "")), files, references: [] };
+      return { title: String(data?.title ?? reference.id), type: branchType(String(data?.type ?? "")), files, references: [], notFetched };
     },
 
     async snapshot(context) {
@@ -334,7 +416,7 @@ export const jira: Service = {
       const open = (await localItems(context)).filter((i) => i.data.inScope === true && i.data.statusCategory !== "done");
       if (open.length === 0) return null;
       const line = (i: { key: string; data: Record<string, unknown> }) =>
-        `- [${i.key}](jira/${i.key}.md) [${String(i.data.status)}] ${String(i.data.title)}${i.data.due ? ` · due ${String(i.data.due)}` : ""}`;
+        `- [${i.key}](jira/${i.key}/${TICKET}) [${String(i.data.status)}] ${String(i.data.title)}${i.data.due ? ` · due ${String(i.data.due)}` : ""}`;
       const due = open.filter((i) => typeof i.data.due === "string" && i.data.due && i.data.due <= today);
       const progress = open.filter((i) => !due.includes(i) && i.data.statusCategory === "indeterminate");
       const todo = open.filter((i) => !due.includes(i) && !progress.includes(i));
@@ -362,8 +444,8 @@ export const jira: Service = {
       async run(context, args) {
         for (const key of args) {
           if (!/^[A-Z][A-Z0-9]{1,9}-\d+$/.test(key)) throw new DevError(`"${key}" isn't a ticket key, like ABC-123.`);
-          await fetchOne(context, { service: SERVICE, id: key });
-          context.out.info(`jira/${key}.md`);
+          await fetchOne(context, { service: SERVICE, id: key }, "pulled");
+          context.out.info(`jira/${key}/${TICKET}`);
         }
       },
     },
@@ -371,5 +453,51 @@ export const jira: Service = {
 
   agentFiles: {
     rules: ["Never comment on, edit or move a Jira ticket unless the person asks you to in this conversation. Read tickets from jira/, not from the Jira website."],
+    docs: [
+      {
+        file: "jira.md",
+        content: `# Jira in this workspace
+
+Each ticket has its own folder, \`jira/<KEY>/\`. A sync only ever writes \`ticket.md\` there:
+notes, research or images you add next to it are never touched.
+
+## Finding tickets
+
+- **What's yours or what to work on:** run \`dev task list --mine\` (or \`dev task list\` for
+  everything open in scope). It says when the data was last synced.
+- **Anything else:** read \`jira/index.md\`, then open only the tickets you need.
+
+The index's **Why** column says why each ticket is here:
+
+| Why | Meaning |
+| --- | --- |
+| scope | Matches the workspace's Jira search: the work this workspace follows |
+| parent | The parent of an open ticket in scope. Specs often live here |
+| linked | A task, PR or brief points to it |
+| pulled | Someone pulled it by hand with \`dev jira pull\` |
+| former | It was in scope, and has left it |
+
+Only **scope** tickets are the work. The rest are context, unless the **Mine** column says
+it's assigned to the person.
+
+## Inside ticket.md
+
+The front matter holds the status, type, priority, assignee, due date, points and parent.
+The body has the description, the acceptance criteria field, relations, attachments and
+comments. Acceptance criteria are often written in the description rather than in their
+own field, and on a sub-task, in the parent's description.
+
+## Commands
+
+| Command | Does |
+| --- | --- |
+| \`dev task list --mine\` | Your open tickets |
+| \`dev jira pull <KEY>\` | Pull a ticket now, in scope or not |
+| \`dev task start <KEY>\` | Set up work on a ticket, with its parent and linked pages |
+| \`dev jira scope\` | Show the search that defines the scope |
+
+Changing the scope, and anything that changes Jira, is the person's call.`,
+      },
+    ],
   },
 };

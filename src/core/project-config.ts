@@ -19,6 +19,10 @@ export interface ServiceConfig {
   /** "<plugin>:<service>", like "atlassian:jira". */
   service: string;
   scope: Scope;
+  /** Absent means within-scope. */
+  fetch?: "within-scope" | "anywhere";
+  /** Absent means full. */
+  sync?: "full" | "referenced";
 }
 
 export interface ProjectConfig {
@@ -104,8 +108,21 @@ export function parseConfig(text: string): { config: ProjectConfig; problems: Pr
       problems.push({ message: `${entry.service}'s scope should be a set of keys.` });
       continue;
     }
+    if (entry.fetch !== undefined && entry.fetch !== "within-scope" && entry.fetch !== "anywhere") {
+      problems.push({ message: `${entry.service}'s fetch should be within-scope or anywhere, not "${String(entry.fetch)}".` });
+      continue;
+    }
+    if (entry.sync !== undefined && entry.sync !== "full" && entry.sync !== "referenced") {
+      problems.push({ message: `${entry.service}'s sync should be full or referenced, not "${String(entry.sync)}".` });
+      continue;
+    }
     seen.add(entry.service);
-    config.services.push({ service: entry.service, scope: (entry.scope as Scope | undefined) ?? {} });
+    config.services.push({
+      service: entry.service,
+      scope: (entry.scope as Scope | undefined) ?? {},
+      ...(entry.fetch ? { fetch: entry.fetch } : {}),
+      ...(entry.sync ? { sync: entry.sync } : {}),
+    });
   }
 
   if (data.conventions !== undefined) {
@@ -159,7 +176,13 @@ export function saveConfig(root: string, config: ProjectConfig): void {
   const file = configPath(root);
   const data: Record<string, unknown> = { version: config.version };
   if (config.versioning) data.versioning = config.versioning;
-  data.services = config.services.map((s) => (Object.keys(s.scope).length > 0 ? s : { service: s.service }));
+  data.services = config.services.map((s) => {
+    const entry: Record<string, unknown> = { service: s.service };
+    if (Object.keys(s.scope).length > 0) entry.scope = s.scope;
+    if (s.fetch) entry.fetch = s.fetch;
+    if (s.sync) entry.sync = s.sync;
+    return entry;
+  });
   if (Object.keys(config.conventions).length > 0) data.conventions = config.conventions;
 
   if (!existsSync(file)) {

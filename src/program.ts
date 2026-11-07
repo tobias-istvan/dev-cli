@@ -78,13 +78,30 @@ function addServiceCommands(program: Command, entry: ServiceEntry, registry: Reg
   const group = program.command(entry.service.id).description(`${entry.service.title}: ${entry.service.description}`);
 
   if (entry.service.role === "connected") {
+    const listable = Boolean(entry.service.scope.add);
     group
       .command("scope")
       .description(`Show or change what ${entry.service.title} syncs`)
+      .argument("[action]", listable ? "add or remove, to change it by link or id" : "Leave out to show or choose it")
+      .argument("[items...]", "Links or ids, for add and remove")
       .option("--set <scope>", "The new scope as YAML or JSON, instead of choosing")
-      .action(async (options: { set?: string }) => {
+      .addHelpText(
+        "after",
+        details(`
+Without arguments, shows the scope, or at a terminal lets you choose it again.${
+          listable
+            ? `
+
+  dev ${entry.service.id} scope add <link or id>...      add items, like a page a ticket links to
+  dev ${entry.service.id} scope remove <link or id>...   take them out again`
+            : ""
+        }
+
+Changing the scope is the person's call: the command check asks before an agent does it.`),
+      )
+      .action(async (action: string | undefined, items: string[], options: { set?: string }) => {
         const { runScope } = await import("./commands/services.ts");
-        await runScope(program, registry, out, entry, options);
+        await runScope(program, registry, out, entry, { ...options, action, items });
       });
   }
 
@@ -278,6 +295,28 @@ pushes.`),
     });
 
   task
+    .command("list")
+    .description("List the tasks: open ones in scope, and any open ones assigned to you")
+    .option("--mine", "Only tasks assigned to you")
+    .option("--all", "Every task, including done ones and ones fetched only as context")
+    .option("--refresh", "Sync the task sources first")
+    .option("--json", "Machine-readable output")
+    .addHelpText(
+      "after",
+      details(`
+Reads the files the last sync wrote, so it's quick and works offline; the output says when
+that was. Use this to answer "what are my tickets?" or "what should I work on?", rather
+than reading the index.
+
+Tasks marked parent, linked or pulled were fetched because something points to them: they
+are context, not your work, unless they're also marked mine.`),
+    )
+    .action(async (options: { mine?: boolean; all?: boolean; refresh?: boolean; json?: boolean }) => {
+      const { runTaskList } = await import("./commands/task.ts");
+      await runTaskList(registry, out, options);
+    });
+
+  task
     .command("status")
     .description("Show the tasks in flight, or one task's state")
     .argument("[id]", "A task, for its commits and changes")
@@ -305,10 +344,22 @@ branch. Task notes in tasks/ are never removed.`),
     .command("sync")
     .description("Sync every enabled service, or one")
     .argument("[service]", "Only this service, like jira")
-    .addHelpText("after", details("One service failing never stops the others. Review the changes before committing them."))
-    .action(async (service: string | undefined) => {
+    .option("--referenced", "For docs services, only update what's here and fetch what tasks point to")
+    .addHelpText(
+      "after",
+      details(`
+Task sources, like Jira, always sync their whole scope. With --referenced, other services
+only update the items already in the workspace, and fetch new ones that open tasks or PRs
+point to. Set "sync: referenced" on a service in dev.yaml to make that its default.
+
+Every sync ends by fetching what open tasks and PRs point to. Each service only fetches
+within its scope, unless dev.yaml sets "fetch: anywhere" for it.
+
+One service failing never stops the others. Review the changes before committing them.`),
+    )
+    .action(async (service: string | undefined, options: { referenced?: boolean }) => {
       const { runSync } = await import("./commands/sync.ts");
-      await runSync(registry, out, service);
+      await runSync(registry, out, service, { referenced: Boolean(options.referenced) });
     });
 
   const day = program.command("day").description("Start and end the working day");
@@ -317,6 +368,7 @@ branch. Task notes in tasks/ are never removed.`),
     .command("start")
     .description("Update the code and every service, then write snapshot.md")
     .option("--no-sync", "Only rewrite snapshot.md from what's on disk")
+    .option("--referenced", "Sync docs services as dev sync --referenced does")
     .addHelpText(
       "after",
       details(`
@@ -324,9 +376,9 @@ Fetches the code and fast-forwards the base branch when that's safe, syncs every
 service, then writes snapshot.md: the last session's next steps, the tasks in flight, and
 what each service has to say. A step that fails doesn't stop the others.`),
     )
-    .action(async (options: { sync?: boolean }) => {
+    .action(async (options: { sync?: boolean; referenced?: boolean }) => {
       const { runDayStart } = await import("./commands/day.ts");
-      await runDayStart(registry, out, { sync: options.sync !== false });
+      await runDayStart(registry, out, { sync: options.sync !== false, referenced: Boolean(options.referenced) });
     });
 
   day
@@ -353,15 +405,21 @@ you write (What happened, Decisions, Next steps, Blocked) are kept.`),
     .addHelpText(
       "after",
       details(`
-Hooks run this check before each shell command an agent runs, in Copilot CLI and Claude
-Code. Commands that only read run; commands that change a service ask the person first;
-anything the check can't follow asks too. Commands it doesn't know are left to your tool.
+Hooks run this check before each shell command and file edit an agent makes, in Copilot
+CLI and Claude Code. Commands that only read run; commands that change a service ask the
+person first; anything the check can't follow asks too. Commands it doesn't know are left
+to your tool.
+
+Changing the workspace's config is a separate kind, "config": dev add, remove, login and
+logout, changing a scope, and any edit to dev.yaml or to your dev settings folder. It asks
+by default; set "config": "deny" to block agents from it entirely.
 
 Change the defaults in policy.json, in your dev config folder:
 
   {
     "read": "allow",
     "change": "ask",
+    "config": "ask",
     "unknown": "ask",
     "commands": { "gh pr create": "allow", "gh pr merge": "deny" }
   }

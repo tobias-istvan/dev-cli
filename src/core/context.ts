@@ -22,9 +22,11 @@ export function serviceContext(
   workspace?: { config: ProjectConfig; registry: Registry },
 ): ServiceContext {
   const plugin = entry.plugin.name;
+  const configured = workspace?.config.services.find((s) => s.service === entry.key);
   return {
     ...pluginContext(root, out),
     root,
+    settings: { fetch: configured?.fetch ?? "within-scope", sync: configured?.sync ?? "full" },
     folder: entry.service.role === "connected" ? path.join(root, entry.service.id) : null,
     scope,
     credentials() {
@@ -46,7 +48,7 @@ export function serviceContext(
           config,
           registry,
           out,
-          contextFor: (other) => serviceContext(root, other, config.services.find((s) => s.service === other.key)?.scope ?? {}, out),
+          contextFor: (other) => serviceContext(root, other, config.services.find((s) => s.service === other.key)?.scope ?? {}, out, workspace),
         },
         text,
         entry.key,

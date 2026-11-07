@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ServiceContext, SyncReport } from "../types.ts";
-import { splitFrontMatter, writeItem } from "../../core/front-matter.ts";
+import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitHubApi } from "./api.ts";
@@ -87,6 +87,15 @@ async function syncedVersion(dir: string): Promise<string | null> {
   }
 }
 
+async function syncedStatus(dir: string): Promise<string | null> {
+  try {
+    const { data } = splitFrontMatter(await readFile(path.join(dir, DESCRIPTION), "utf8"));
+    return typeof data?.status === "string" ? data.status : null;
+  } catch {
+    return null;
+  }
+}
+
 async function classify(context: ServiceContext, pr: Summary): Promise<ReviewState> {
   const dir = path.join(folder(context), String(pr.number));
   const synced = await syncedVersion(dir);
@@ -136,7 +145,9 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
   const references = await context.references(`${pr.title}\n${pr.body ?? ""}`);
   const links = references.map((r) => r.file ?? r.reference.url ?? r.reference.id);
   const linkLines = references.map((r) =>
-    r.file ? `- ${r.reference.id}: [${path.basename(r.file)}](${path.posix.relative(`${FOLDER}/${number}`, r.file.split(path.sep).join("/"))})` : `- ${r.reference.id} (not fetched)`,
+    r.file
+      ? `- ${r.reference.id}: [${r.file.split(path.sep).join("/")}](${path.posix.relative(`${FOLDER}/${number}`, r.file.split(path.sep).join("/"))})`
+      : `- ${r.reference.url ?? r.reference.id} (${r.outside ? "outside the scope, not fetched" : "not fetched"})`,
   );
 
   const fields = {
@@ -194,17 +205,21 @@ export async function poll(context: ServiceContext, options: PollOptions): Promi
 
   const [me, open] = await Promise.all([api.get<{ login: string }>("/user"), api.list<Summary>(`/repos/${repo}/pulls?state=open`)]);
 
-  // Folders of PRs merged or closed since they were pulled would otherwise linger forever.
+  // PRs merged or closed since they were pulled keep their folder, marked, so reviews stay on record.
   const removed: PollResult["removed"] = [];
   if (options.pull && existsSync(folder(context))) {
     const openNumbers = new Set(open.map((pr) => pr.number));
     for (const entry of await readdir(folder(context), { withFileTypes: true })) {
       if (!entry.isDirectory() || !/^\d+$/.test(entry.name) || openNumbers.has(Number(entry.name))) continue;
+      const known = await syncedStatus(path.join(folder(context), entry.name));
+      if (known === "merged" || known === "closed") continue;
       try {
         const pr = await api.get<Detail>(`/repos/${repo}/pulls/${entry.name}`);
         if (pr.state !== "closed") continue;
-        await rm(path.join(folder(context), entry.name), { recursive: true, force: true });
-        removed.push({ number: Number(entry.name), state: pr.merged_at ? "merged" : "closed" });
+        const status = pr.merged_at ? "merged" : "closed";
+        const file = path.join(folder(context), entry.name, DESCRIPTION);
+        if (!existsSync(file) || !(await updateFields(file, { status }))) continue;
+        removed.push({ number: Number(entry.name), state: status });
         report.removed++;
       } catch (error) {
         report.failed.push({ id: `#${entry.name}`, reason: (error as Error).message });

@@ -22,6 +22,13 @@ export interface CommonFields {
   links?: string[];
 }
 
+/**
+ * Why an item is in the workspace: its service's scope, the parent of an item in scope,
+ * linked from a task or PR, pulled by hand, or formerly in the scope. Items not in the
+ * scope are context for the work, not work themselves.
+ */
+export type Via = "scope" | "parent" | "linked" | "pulled" | "former";
+
 export const REQUIRED_FIELDS = ["id", "title", "service", "url", "updated", "synced"] as const;
 
 const FENCE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -77,4 +84,14 @@ export async function writeItem(file: string, fields: CommonFields & Record<stri
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, renderItem(fields, body));
   return "added";
+}
+
+/** Changes some front matter fields of an item in place, keeping its body. Returns whether anything changed. */
+export async function updateFields(file: string, changes: Record<string, unknown>): Promise<boolean> {
+  const current = readFileSync(file, "utf8");
+  const { data, body } = splitFrontMatter(current);
+  if (!data || missingFields(data).length > 0) return false;
+  if (Object.entries(changes).every(([key, value]) => data[key] === value)) return false;
+  await writeFile(file, renderItem({ ...(data as unknown as CommonFields), ...changes }, body));
+  return true;
 }

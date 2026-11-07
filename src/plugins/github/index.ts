@@ -181,7 +181,7 @@ const github: Plugin = {
             }
             context.out.info(`${result.repo}: ${result.open} open, ${result.considered.length} to consider.`);
             for (const pr of result.considered) context.out.info(`  #${pr.number} [${pr.state}] ${pr.author}: ${pr.title}`);
-            for (const pr of result.removed) context.out.info(`Removed #${pr.number}, ${pr.state} since it was pulled.`);
+            for (const pr of result.removed) context.out.info(`#${pr.number} was ${pr.state} since it was pulled. Its folder stays, marked ${pr.state}.`);
             for (const failure of result.report.failed) context.out.warn(`Couldn't pull ${failure.id}: ${failure.reason}`);
             if (options.pull === false && attention.length > 0) context.out.info('Not pulled, because of --no-pull. Pull one with "dev github pr <N>".');
             context.out.info(attention.length > 0 ? `Done: ${attention.length} to review: ${attention.map((pr) => `#${pr.number}`).join(", ")}.` : "Done: nothing to review.");

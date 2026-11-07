@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 3 complete (Atlassian: Jira and Confluence; add, remove and scope). Open questions are at the end.
+Status: phase 3b complete (tasks, the fetch boundary, referenced syncing, files are never removed). Open questions are at the end.
 
 ## Goals
 
@@ -62,6 +62,9 @@ my-workspace/
   jira/, confluence/, github-issues/, notion/, ...   one folder per connected service
 ```
 
+- **One item per folder where people add files.** Jira keeps each ticket as
+  `jira/<KEY>/ticket.md`, so research notes or images can sit beside it. A sync only ever
+  writes `ticket.md`.
 - **One folder per service**, named after it. The plugin decides what goes inside, with an
   `index.md` that the core builds from front matter.
 - **Task notes live in `tasks/`**, not in a service's folder. A sync owns its folder and may
@@ -93,9 +96,15 @@ plugin may add its own after them.
 | `status` | no | The service's own status words |
 | `parent` | no | The id of a parent item, when the service has one |
 | `links` | no | References to other items, as URLs or ids |
+| `inScope` | no | Whether the item is in its service's scope |
+| `via` | no | Why it's here: `scope`, `parent`, `linked`, `pulled` or `former` |
+| `mine` | no | Whether it's assigned to the person running dev, for services with assignees |
 
 The core builds each folder's `index.md` from these fields, so every index has the same
-columns and agents read them the same way.
+columns and agents read them the same way: ID, Title, Status and Updated, plus Mine and Why
+where the service records them. A one-line legend says that only `scope` items are the
+work; the rest are context. For "what's mine?", agents run `dev task list --mine`, which
+reads the same front matter through each task source's `tasks` capability.
 
 ## Configuration
 
@@ -120,6 +129,35 @@ conventions:
 ```
 
 Each service validates its own `scope`. `dev doctor` checks the whole file.
+
+### Syncing and the scope boundary
+
+Each service entry can also say how it syncs and what it may fetch:
+
+```yaml
+  - service: atlassian:confluence
+    scope: { spaces: [DOCS] }
+    sync: referenced     # default full
+    fetch: anywhere      # default within-scope
+```
+
+- **`fetch`:** with `within-scope`, the default, a service never fetches an item outside
+  its scope, even when a task or PR links to it. Briefs and PRs list those links as
+  outside the scope, so a person can open them. Companies wary of AI reading everything
+  keep the default. Like the command check, this limits dev, not the token.
+- **`sync`:** task sources, like Jira, always sync their whole scope. Other services can
+  sync `referenced`: they only update the items already in the workspace and fetch new
+  ones that open tasks or PRs point to. `dev sync --referenced` does the same for one run.
+- **Every sync ends with a sweep:** what open tasks and open PRs point to is fetched from
+  the other services, within their scope.
+- **Nothing is removed for leaving the scope.** A ticket or page tree that left it, or a PR
+  that was merged, keeps its file, marked `inScope: false` or with its new status. Files are
+  cheap, and the history is worth keeping. Within a Confluence tree, a page renamed or moved
+  in Confluence still replaces its old folder, so there's one copy of each page.
+
+A service that holds tasks implements the `tasks` capability: a list of its tasks with an
+id, title, status, whether it's done, whether it's assigned to the person, and a due date.
+That tells the core which items drive the sweep, without a shared ticket model.
 
 ### Home config
 
@@ -161,13 +199,15 @@ block.
 | `dev index [service]` | Rebuilds service folders' `index.md` from front matter |
 | `dev add <service>`, `dev remove <service>` | Enable or disable one service, as init does |
 | `dev login <plugin>`, `dev logout <plugin>` | Log in or out. People only, never agents |
-| `dev sync [service]` | Sync every enabled service, or one |
+| `dev sync [service] [--referenced]` | Sync every enabled service, or one; with `--referenced`, docs services only keep what tasks point to |
 | `dev day start`, `dev day end` | Refresh and write the snapshot; save sessions and the day summary |
 | `dev task start <ref>` | Fetch the item and what it links to, create the worktree and notes |
+| `dev task list [--mine] [--all] [--refresh]` | The tasks from every task source, from the last sync: what's yours, what's open |
 | `dev task status [id]`, `dev task cleanup` | What's in flight; which worktrees can go |
 | `dev check "<command>"` | What the command check decides, without running anything |
 | `dev github prs`, `dev github pr <N>` | Find and pull the PRs to review; pull one PR |
-| `dev <service> <action>` | Each service's own commands, like `dev jira pull ABC-1` or `dev confluence scope` |
+| `dev <service> scope [add\|remove <items>] [--set <scope>]` | Show or change a service's scope; add and remove take links or ids where the scope is a list |
+| `dev <service> <action>` | Each service's own commands, like `dev jira pull ABC-1` or `dev confluence pull <page>` |
 | `dev hook <event>` | Run by tool hooks |
 
 `<ref>` is anything a service recognises: a key, an issue number or a URL.
@@ -230,6 +270,11 @@ CLIs it knows, for every plugin. Reads run, changes ask the
 person, anything that can't be followed asks, and commands no plugin knows are left to the
 tool. Plugins' own `dev` subcommands are covered the same way, from their read or change
 marks.
+
+Changing the workspace's config is its own kind, `config`: `dev add`, `remove`, `login`,
+`logout`, changing a scope, and any edit to `dev.yaml` or the dev settings folder, whether
+through a shell command or a file-editing tool. The hooks cover both. It asks by default,
+and a team can set it to `deny` so agents can't widen what they're allowed to read.
 
 The person's decisions live in `policy.json` in the dev config folder: `read`, `change`
 and `unknown` defaults, plus per-command rules like `"gh pr create": "allow"`, where the

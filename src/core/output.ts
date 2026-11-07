@@ -11,6 +11,14 @@ export class DevError extends Error {
   }
 }
 
+/** A fetch refused because the item is outside the scope, and the workspace only fetches within it. */
+export class OutsideScope extends DevError {
+  constructor(what: string) {
+    super(`${what} is outside this workspace's scope, so it wasn't fetched.`, 'To allow it, set "fetch: anywhere" for that service in dev.yaml.');
+    this.name = "OutsideScope";
+  }
+}
+
 export const consoleOutput: Output = {
   info: (message) => console.log(message),
   warn: (message) => console.error(message),

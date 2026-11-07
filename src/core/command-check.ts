@@ -16,11 +16,13 @@ import { configDir } from "./paths.ts";
  */
 
 export type Decision = "allow" | "ask" | "deny";
-export type Kind = Mark | "unknown";
+/** "config" changes what the workspace syncs or fetches, or who it logs in as: a person's call. */
+export type Kind = Mark | "unknown" | "config";
 
 export interface Policy {
   read: Decision;
   change: Decision;
+  config: Decision;
   unknown: Decision;
   /** Per-command decisions, like "gh pr create": "allow". The longest match wins. */
   commands: Record<string, Decision>;
@@ -28,6 +30,7 @@ export interface Policy {
 
 export const DEFAULT_POLICY: Policy = {
   read: "allow",
+  config: "ask",
   change: "ask",
   unknown: "ask",
   // Read-only, but it prints a token into the agent's context.
@@ -72,7 +75,13 @@ export function loadPolicy(file = policyFile()): { policy: Policy; problem: stri
       }
     }
     return {
-      policy: { read: pick(parsed.read, DEFAULT_POLICY.read), change: pick(parsed.change, DEFAULT_POLICY.change), unknown: pick(parsed.unknown, DEFAULT_POLICY.unknown), commands },
+      policy: {
+        read: pick(parsed.read, DEFAULT_POLICY.read),
+        change: pick(parsed.change, DEFAULT_POLICY.change),
+        config: pick(parsed.config, DEFAULT_POLICY.config),
+        unknown: pick(parsed.unknown, DEFAULT_POLICY.unknown),
+        commands,
+      },
       problem: null,
     };
   } catch {
@@ -267,10 +276,18 @@ export function classifiers(registry: Registry): Map<string, Classifier> {
 
   // dev's own service commands carry their mark. Core commands only touch the workspace.
   map.set("dev", (args) => {
-    const [first, second] = args.filter((arg) => !arg.startsWith("-"));
+    const [first, second, third] = args.filter((arg) => !arg.startsWith("-"));
     if (args.includes("--help") || args.includes("-h")) return null;
-    if (first === "login") return { command: "dev login", kind: "change", why: "logins are for people, not agents" };
+    if (first === "login" || first === "logout") return { command: `dev ${first}`, kind: "config", why: "logins are for people, not agents" };
+    if (first === "init" || first === "add" || first === "remove") {
+      return { command: `dev ${first}`, kind: "config", why: "changes which services the workspace uses" };
+    }
     const entry = first ? registry.service(first) : undefined;
+    if (entry && second === "scope") {
+      // Showing the scope only reads; changing it is the person's call.
+      if (!third && !args.includes("--set")) return { command: `dev ${entry.service.id} scope`, kind: "read", why: "shows the scope" };
+      return { command: `dev ${entry.service.id} scope`, kind: "config", why: `changes what ${entry.service.title} syncs` };
+    }
     const definition = entry?.service.commands?.find((c) => c.name === second);
     if (!entry || !definition) return null;
     return {
@@ -352,8 +369,8 @@ function decide(call: Call, policy: Policy): { decision: Decision; rule: string 
  * a harmless helper like cd or head; anything else in the line leaves it to the tool,
  * unless a call in it needs asking or is blocked.
  */
-export function judge(line: string, policy: Policy, map: Map<string, Classifier>): Verdict {
-  const calls = findCalls(line, map).map((call) => ({ ...call, ...decide(call, policy) }));
+export function judge(line: string, policy: Policy, map: Map<string, Classifier>, root: string | null = null, cwd: string | null = null): Verdict {
+  const calls = [...findCalls(line, map), ...protectedCalls(line, root, cwd)].map((call) => ({ ...call, ...decide(call, policy) }));
   if (calls.length === 0) return { decision: null, calls, reason: "" };
 
   const strictest = calls.reduce((a, b) => (STRICTNESS[b.decision] > STRICTNESS[a.decision] ? b : a));
@@ -374,4 +391,55 @@ export function judge(line: string, policy: Policy, map: Map<string, Classifier>
       ? "Blocked by the person's dev command check. Don't try another way: tell the person what you wanted to run and why"
       : "dev command check: this needs the person's approval";
   return { decision: strictest.decision, calls, reason: `${prefix}. ${describe(strictest)}` };
+}
+
+// ---------------------------------------------------------------------------
+// Protected files: the workspace's config, and the person's own dev settings
+
+/** Commands that only read the files they're given. */
+const READERS = new Set(["cat", "head", "tail", "less", "more", "grep", "rg", "wc", "diff", "bat", "file", "stat", "ls", "yq", "jq"]);
+
+/** Whether a path is one an agent shouldn't change: dev.yaml, or anything in the dev config folder. */
+export function isProtected(word: string, root: string | null, cwd: string | null = null): boolean {
+  const target = word.replace(/^\d*>>?/, "").replace(/^["']|["']$/g, "");
+  if (!target) return false;
+  if (/(^|\/)dev\.yaml$/.test(target)) {
+    // Only the workspace's own dev.yaml: the code repository may have a file of that name too.
+    if (!root) return target === "dev.yaml";
+    if (path.isAbsolute(target)) return target === path.join(root, "dev.yaml");
+    return cwd ? path.resolve(cwd, target) === path.join(root, "dev.yaml") : target === "dev.yaml";
+  }
+  const folder = configDir();
+  return target.includes("/.config/dev/") || target === "~/.config/dev" || (path.isAbsolute(target) && (target === folder || target.startsWith(`${folder}${path.sep}`)));
+}
+
+/** A call for each command line part that may write a protected file. */
+function protectedCalls(line: string, root: string | null, cwd: string | null): Call[] {
+  const calls: Call[] = [];
+  for (const segment of splitCommands(line)) {
+    const at = segment.words.findIndex((word) => isProtected(word, root, cwd));
+    const touched = segment.words[at];
+    if (at === -1 || !touched) continue;
+    const words = commandWords(segment.words);
+    const first = path.basename(words[0] ?? "");
+    // Written to by a redirection, like > dev.yaml. A redirection elsewhere doesn't count.
+    const writes = /^\d*>>?\S/.test(touched) || /^\d*>>?$/.test(segment.words[at - 1] ?? "");
+    const gitRead = first === "git" && ["diff", "log", "show", "status", "blame"].includes(words[1] ?? "");
+    if (!writes && (READERS.has(first) || gitRead)) continue;
+    calls.push({ command: `${first} ${path.basename(touched.replace(/^\d*>>?/, ""))}`, kind: "config", why: "may change the workspace's dev config or your dev settings" });
+  }
+  return calls;
+}
+
+/** The verdict for a file edit tool, like Edit or Write, about to change `file`. */
+export function judgeFileEdit(file: string, policy: Policy, root: string | null): Verdict | null {
+  if (!isProtected(file, root, root)) return null;
+  const decision = policy.config;
+  const call = { command: `edit ${path.basename(file)}`, kind: "config" as const, why: "changes the workspace's dev config or your dev settings", decision, rule: `config: ${decision}` };
+  if (decision === "allow") return { decision: null, calls: [call], reason: "" };
+  return {
+    decision,
+    calls: [call],
+    reason: `${decision === "deny" ? "Blocked by the person's dev command check. Don't try another way: tell the person what you wanted to change and why" : "dev command check: this needs the person's approval"}. ${call.command}: ${call.why}`,
+  };
 }

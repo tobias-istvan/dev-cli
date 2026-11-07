@@ -4,7 +4,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Registry } from "../plugins/registry.ts";
 import type { Output } from "../plugins/types.ts";
-import { classifiers, judge, loadPolicy, type Verdict } from "../core/command-check.ts";
+import { classifiers, judge, judgeFileEdit, loadPolicy, type Verdict } from "../core/command-check.ts";
 import { workspaceServiceContext } from "../core/context.ts";
 import { latestHandoff, today } from "../core/day.ts";
 import { parseConfig, configPath } from "../core/project-config.ts";
@@ -117,18 +117,44 @@ export function commandFrom(raw: Record<string, unknown>): string | null {
   return typeof command === "string" && command.trim() ? command : null;
 }
 
-export function check(registry: Registry, command: string): Verdict {
-  return judge(command, loadPolicy().policy, classifiers(registry));
+export function check(registry: Registry, command: string, root: string | null = findWorkspaceRoot(), cwd: string | null = process.cwd()): Verdict {
+  return judge(command, loadPolicy().policy, classifiers(registry), root, cwd);
+}
+
+/** The file a file-editing tool is about to write, if this payload is one. Reading tools don't count. */
+export function editedFile(raw: Record<string, unknown>): string | null {
+  const name = String(raw.tool_name ?? raw.toolName ?? "");
+  if (/read|view|glob|grep|search|list|fetch/i.test(name)) return null;
+  let args: unknown = raw.tool_input ?? raw.toolInput ?? raw.toolArgs ?? raw.tool_args;
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return null;
+    }
+  }
+  if (!args || typeof args !== "object") return null;
+  const fields = args as Record<string, unknown>;
+  const file = fields.file_path ?? fields.filePath ?? fields.path ?? fields.notebook_path;
+  return typeof file === "string" && file ? file : null;
 }
 
 export async function runPreTool(registry: Registry, toolOption: string): Promise<void> {
   const input = parseHookInput(await readStdin(), toolOption);
-  const command = input.standDown ? null : commandFrom(input.raw);
-  if (!command) return respond(input.tool, "PreToolUse", {});
+  if (input.standDown) return respond(input.tool, "PreToolUse", {});
+  const root = workspaceFor(input.cwd);
+  const command = commandFrom(input.raw);
 
-  let verdict: Verdict;
+  let verdict: Verdict | null;
   try {
-    verdict = check(registry, command);
+    if (command) {
+      verdict = check(registry, command, root, input.cwd ?? root);
+    } else {
+      const file = editedFile(input.raw);
+      const absolute = file && input.cwd && !path.isAbsolute(file) ? path.join(input.cwd, file) : file;
+      verdict = absolute ? judgeFileEdit(absolute, loadPolicy().policy, root) : null;
+    }
+    if (!verdict) return respond(input.tool, "PreToolUse", {});
   } catch {
     verdict = { decision: "ask", calls: [], reason: "dev command check: the check failed, so this needs the person's approval" };
   }

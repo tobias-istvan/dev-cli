@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { Output, Reference, ServiceEntry } from "../plugins/types.ts";
 import type { Registry } from "../plugins/registry.ts";
+import { OutsideScope } from "./output.ts";
 import type { ProjectConfig } from "./project-config.ts";
 
 /**
@@ -19,8 +20,8 @@ export interface LinkTools {
   contextFor(entry: ServiceEntry): import("../plugins/types.ts").ServiceContext;
 }
 
-export async function resolveReferences(tools: LinkTools, text: string, exclude?: string): Promise<Array<{ reference: Reference; file: string | null }>> {
-  const results: Array<{ reference: Reference; file: string | null }> = [];
+export async function resolveReferences(tools: LinkTools, text: string, exclude?: string): Promise<Array<{ reference: Reference; file: string | null; outside?: boolean }>> {
+  const results: Array<{ reference: Reference; file: string | null; outside?: boolean }> = [];
   const seen = new Set<string>();
 
   const enabled = new Set(tools.config.services.map((s) => s.service));
@@ -37,6 +38,10 @@ export async function resolveReferences(tools: LinkTools, text: string, exclude?
         const file = await entry.service.links.fetch(tools.contextFor(entry), reference);
         results.push({ reference, file: existsSync(file) ? path.relative(tools.root, file) : null });
       } catch (error) {
+        if (error instanceof OutsideScope) {
+          results.push({ reference, file: null, outside: true });
+          continue;
+        }
         tools.out.warn(`Couldn't fetch ${reference.id} from ${entry.service.title}: ${(error as Error).message}`);
         results.push({ reference, file: null });
       }

@@ -101,25 +101,28 @@ function workspace(): string {
   return root;
 }
 
-test("prs pulls others' open PRs with their comments and linked items, and removes merged ones", async () => {
+test("prs pulls others' open PRs with their comments and linked items, and marks merged ones", async () => {
   const root = workspace();
   mkdirSync(path.join(root, "pull-requests", "9"), { recursive: true });
   writeFileSync(path.join(root, "pull-requests", "9", "review.md"), "old review\n");
+  writeFileSync(path.join(root, "pull-requests", "9", "pr-description.md"), "---\nid: \"9\"\ntitle: Old\nservice: github:github\nurl: u\nupdated: x\nsynced: y\nstatus: open\n---\n\nOld\n");
 
   const { code, out, err } = await dev(root, ["github", "prs"]);
   assert.equal(code, 0, err);
   assert.match(out, /acme\/web: 3 open, 1 to consider\./);
   assert.match(out, /#1 \[new\] alex: Fix the login button/);
-  assert.match(out, /Removed #9, merged since it was pulled\./);
+  assert.match(out, /#9 was merged since it was pulled\. Its folder stays, marked merged\./);
   assert.match(out, /Done: 1 to review: #1\./);
-  assert.ok(!existsSync(path.join(root, "pull-requests", "9")));
+  assert.equal(readFileSync(path.join(root, "pull-requests", "9", "review.md"), "utf8"), "old review\n", "the review stays on record");
+  assert.match(readFileSync(path.join(root, "pull-requests", "9", "pr-description.md"), "utf8"), /status: merged/);
+  assert.doesNotMatch((await dev(root, ["github", "prs"])).out, /#9/, "it's only reported once");
   assert.ok(!existsSync(path.join(root, "pull-requests", "2")), "your own PRs are skipped");
   assert.ok(!existsSync(path.join(root, "pull-requests", "3")), "drafts are skipped");
 
   const description = readFileSync(path.join(root, "pull-requests", "1", "pr-description.md"), "utf8");
   assert.match(description, /^---\nid: "1"\ntitle: Fix the login button\nservice: github:github\n/);
   assert.match(description, /status: open\nlinks:\n {2}- notes\/N-1\.md\nauthor: alex\n/);
-  assert.match(description, /- N-1: \[N-1\.md\]\(\.\.\/\.\.\/notes\/N-1\.md\)/);
+  assert.match(description, /- N-1: \[notes\/N-1\.md\]\(\.\.\/\.\.\/notes\/N-1\.md\)/);
   assert.ok(existsSync(path.join(root, "notes", "N-1.md")), "the linked item was fetched");
 
   const comments = readFileSync(path.join(root, "pull-requests", "1", "comments.md"), "utf8");
@@ -128,7 +131,8 @@ test("prs pulls others' open PRs with their comments and linked items, and remov
 
   const index = readFileSync(path.join(root, "pull-requests", "index.md"), "utf8");
   assert.match(index, /\| \[1\]\(1\/pr-description\.md\) \| Fix the login button \| open \| 2026-11-01 \|/);
-  assert.match(index, /1 item\./);
+  assert.match(index, /2 items\./);
+  assert.match(index, /\| \[9\]\(9\/pr-description\.md\) \| Old \| merged \|/);
 });
 
 test("a PR moves from unreviewed to current to updated", async () => {

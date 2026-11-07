@@ -3,9 +3,9 @@ import { copyFile, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from
 import path from "node:path";
 import { posix } from "node:path";
 import type { Reference, Scope, Service, ServiceContext, SyncReport } from "../types.ts";
-import { renderItem, splitFrontMatter, type CommonFields } from "../../core/front-matter.ts";
+import { renderItem, splitFrontMatter, updateFields, type CommonFields, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError } from "../../core/output.ts";
+import { DevError, OutsideScope } from "../../core/output.ts";
 import { ask, search as searchPrompt, searchRemote } from "../../core/prompt.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { convertStorageToMarkdown } from "./html.ts";
@@ -138,7 +138,7 @@ interface TreeResult {
  * Syncs one root page, and with `withChildren` everything under it. `inScope` marks
  * whether it came from the scope, so a sync knows what it may remove later.
  */
-async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: string, options: { withChildren: boolean; inScope: boolean; attachments: boolean }): Promise<TreeResult> {
+async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: string, options: { withChildren: boolean; via: Via; attachments: boolean }): Promise<TreeResult> {
   const base = folder(context);
   const report: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
   const warnings: string[] = [];
@@ -236,7 +236,8 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
               space: space.key,
               version: page.version?.number ?? 0,
               root: root.id,
-              inScope: options.inScope,
+              inScope: options.via === "scope",
+              via: options.via,
             },
             markdown,
           );
@@ -332,7 +333,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
 
   for (const id of ids) {
     try {
-      const result = await syncTree(context, api, id, { withChildren: true, inScope: true, attachments: context.scope.attachments !== false });
+      const result = await syncTree(context, api, id, { withChildren: true, via: "scope", attachments: context.scope.attachments !== false });
       total.added += result.report.added;
       total.updated += result.report.updated;
       total.removed += result.report.removed;
@@ -343,10 +344,12 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
     }
   }
 
-  // Trees whose root left the scope go. Pages fetched on demand stay.
+  // Trees whose root left the scope stay, marked as outside it. Files are cheap, and history matters.
   for (const { dir, data } of await topFolders(context)) {
     if (data?.inScope === true && typeof data.root === "string" && !ids.includes(data.root) && data.root === data.id) {
-      await rm(dir, { recursive: true, force: true });
+      for (const file of (await readdir(dir, { recursive: true, encoding: "utf8" })).filter((f) => path.basename(f) === "index.md")) {
+        await updateFields(path.join(dir, file), { inScope: false, via: "former" });
+      }
       total.removed++;
     }
   }
@@ -363,9 +366,99 @@ async function localPage(context: ServiceContext, id: string): Promise<string | 
   return match ? path.join(base, match) : null;
 }
 
+/**
+ * Whether a page is inside the scope: a listed page, under one, or in a whole space in it.
+ * Only the page's metadata is read to tell, never its content.
+ */
+async function withinScope(context: ServiceContext, api: AtlassianClient, id: string): Promise<boolean> {
+  if (context.settings.fetch === "anywhere") return true;
+  const listed = roots(context.scope);
+  if (listed.includes(id)) return true;
+  const page = await api.get<{ spaceId?: string }>(`/wiki/api/v2/pages/${id}`);
+  if (spaces(context.scope).length > 0 && page.spaceId) {
+    const space = await api.get<{ key: string }>(`/wiki/api/v2/spaces/${page.spaceId}`);
+    if (spaces(context.scope).includes(space.key)) return true;
+  }
+  if (listed.length === 0) return false;
+  const ancestors = await paginate<{ id: string }>(api, `/wiki/api/v2/pages/${id}/ancestors?limit=250`).catch(() => [] as Array<{ id: string }>);
+  return ancestors.some((ancestor) => listed.includes(ancestor.id));
+}
+
+/** Every page already in the workspace: its file, and its front matter. */
+async function localPages(context: ServiceContext): Promise<Array<{ file: string; data: Record<string, unknown> }>> {
+  const base = folder(context);
+  if (!existsSync(base)) return [];
+  const pages: Array<{ file: string; data: Record<string, unknown> }> = [];
+  for (const relative of (await readdir(base, { recursive: true, encoding: "utf8" })).filter((f) => path.basename(f) === "index.md" && f !== "index.md" && !f.startsWith("."))) {
+    const { data } = splitFrontMatter(await readFile(path.join(base, relative), "utf8"));
+    if (data && typeof data.id === "string") pages.push({ file: path.join(base, relative), data });
+  }
+  return pages;
+}
+
+/**
+ * Updates the pages already in the workspace, one by one, without pulling the rest of the
+ * scope. Only pages whose version changed are fetched again.
+ */
+async function refresh(context: ServiceContext): Promise<SyncReport> {
+  const api = client(context);
+  const report: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
+  const pages = await localPages(context);
+  const byTitle = new Map(pages.map((p) => [String(p.data.title), path.dirname(p.file)]));
+  const limit = limiter(4);
+
+  await Promise.all(
+    pages.map((local) =>
+      limit(async () => {
+        const id = String(local.data.id);
+        try {
+          const meta = await api.get<{ version?: { number: number } }>(`/wiki/api/v2/pages/${id}`);
+          if (meta.version?.number === local.data.version) return;
+          const page = await getPage(api, id);
+          const dir = path.dirname(local.file);
+          const { markdown } = convertStorageToMarkdown(page.body?.storage?.value ?? "", {
+            resolvePageLink(title) {
+              const to = byTitle.get(title);
+              return to ? posix.join(path.relative(dir, to).split(path.sep).join("/") || ".", "index.md") : null;
+            },
+            resolveAttachment: (filename) => (existsSync(path.join(dir, "attachments", safeFilename(filename))) ? posix.join("attachments", safeFilename(filename)) : null),
+            jiraBrowseUrl: (key) => api.browseUrl(key),
+          });
+          const { content, state } = stableContent(local.file, { ...(local.data as unknown as CommonFields), title: page.title, updated: page.version?.createdAt ?? String(local.data.updated), synced: new Date().toISOString(), version: page.version?.number ?? 0 }, markdown);
+          if (state !== "unchanged") {
+            await writeFile(local.file, content);
+            report.updated++;
+          }
+        } catch (error) {
+          report.failed.push({ id: `${String(local.data.title)} (${id})`, reason: (error as Error).message });
+        }
+      }),
+    ),
+  );
+  index(context);
+  return report;
+}
+
+/**
+ * A short link, /wiki/x/<code>: the page id, little-endian, in a URL-safe base64 that
+ * leaves out the padding.
+ */
+export function shortLinkId(code: string): string | null {
+  if (!/^[A-Za-z0-9_-]{2,16}$/.test(code)) return null;
+  const base64 = code.replace(/-/g, "/").replace(/_/g, "+");
+  const bytes = Buffer.from(base64 + "A".repeat((4 - (base64.length % 4)) % 4), "base64");
+  let id = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) id = (id << 8n) | BigInt(bytes[i] ?? 0);
+  return id > 0n ? id.toString() : null;
+}
+
+const SHORT_LINK = /https?:\/\/[\w.-]+(?::\d+)?\/wiki\/x\/([A-Za-z0-9_-]+)/g;
+
 const PAGE_LINK = /https?:\/\/[\w.-]+(?::\d+)?\/wiki\/[^\s)<>"']*?(?:\/pages\/(\d+)|pageId=(\d+))[^\s)<>"']*/g;
 
 function pageIdFrom(word: string): string | null {
+  const short = word.match(/\/wiki\/x\/([A-Za-z0-9_-]+)/)?.[1];
+  if (short) return shortLinkId(short);
   return word.match(/\/pages\/(\d+)|pageId=(\d+)/)?.slice(1).find(Boolean) ?? (/^\d+$/.test(word) ? word : null);
 }
 
@@ -456,6 +549,33 @@ export const confluence: Service = {
       return parts.join(" and ") || "nothing yet";
     },
     choose: chooseScope,
+    add(scope, items) {
+      const ids = roots(scope);
+      const added: string[] = [];
+      const problems = [];
+      for (const item of items) {
+        const id = pageIdFrom(item);
+        if (!id) problems.push({ message: `"${item}" isn't a Confluence page link or id.` });
+        else if (!ids.includes(id) && !added.includes(id)) added.push(id);
+      }
+      return { scope: { ...scope, roots: [...ids, ...added] }, added, problems };
+    },
+    remove(scope, items) {
+      const ids = roots(scope);
+      const keys = spaces(scope);
+      const removed: string[] = [];
+      const problems = [];
+      for (const item of items) {
+        const id = pageIdFrom(item);
+        if (id && ids.includes(id)) removed.push(id);
+        else if (keys.includes(item)) removed.push(item);
+        else problems.push({ message: `"${item}" isn't in the scope.` });
+      }
+      const next: Scope = { ...scope, roots: ids.filter((id) => !removed.includes(id)), spaces: keys.filter((key) => !removed.includes(key)) };
+      if ((next.roots as string[]).length === 0) delete next.roots;
+      if ((next.spaces as string[]).length === 0) delete next.spaces;
+      return { scope: next, removed, problems };
+    },
     validate(scope) {
       const ids = scope.roots;
       const keys = scope.spaces;
@@ -472,6 +592,7 @@ export const confluence: Service = {
   },
 
   sync,
+  refresh,
 
   links: {
     find(text) {
@@ -480,12 +601,18 @@ export const confluence: Service = {
         const id = match[1] ?? match[2];
         if (id && !found.some((r) => r.id === id)) found.push({ service: SERVICE, id, url: match[0].replace(/&amp;/g, "&").replace(/[.,;]+$/, "") });
       }
+      for (const match of text.matchAll(SHORT_LINK)) {
+        const id = shortLinkId(match[1] ?? "");
+        if (id && !found.some((r) => r.id === id)) found.push({ service: SERVICE, id, url: match[0] });
+      }
       return found;
     },
     async fetch(context, reference) {
       const existing = await localPage(context, reference.id);
       if (existing) return existing;
-      const result = await syncTree(context, client(context), reference.id, { withChildren: false, inScope: false, attachments: true });
+      const api = client(context);
+      if (!(await withinScope(context, api, reference.id))) throw new OutsideScope(`Confluence page ${reference.url ?? reference.id}`);
+      const result = await syncTree(context, api, reference.id, { withChildren: false, via: "linked", attachments: true });
       index(context);
       return path.join(context.root, result.dir, "index.md");
     },
@@ -515,7 +642,9 @@ export const confluence: Service = {
         const word = args[0] ?? "";
         const id = pageIdFrom(word);
         if (!id) throw new DevError(`"${word}" isn't a Confluence page link or id.`);
-        const result = await syncTree(context, client(context), id, { withChildren: true, inScope: false, attachments: true });
+        const api = client(context);
+        if (!(await withinScope(context, api, id))) throw new OutsideScope(`Confluence page ${word}`);
+        const result = await syncTree(context, api, id, { withChildren: true, via: "pulled", attachments: true });
         index(context);
         for (const warning of result.warnings) context.out.warn(`  ${warning}`);
         context.out.info(`${result.dir}: ${result.report.added} new, ${result.report.updated} updated${result.report.failed.length > 0 ? `, ${result.report.failed.length} failed` : ""}.`);
@@ -526,5 +655,39 @@ export const confluence: Service = {
 
   agentFiles: {
     rules: ["Read Confluence pages from confluence/, starting at its index.md. Never edit or comment on a Confluence page unless the person asks you to in this conversation."],
+    docs: [
+      {
+        file: "confluence.md",
+        content: `# Confluence in this workspace
+
+Pages are mirrored one folder per page, following the page tree:
+\`confluence/<SPACE>/<Title-id>/<Child-id>/index.md\`. Links between pages point to the local
+files, and attachments sit in each page's \`attachments/\` folder.
+
+## Finding pages
+
+Read \`confluence/index.md\`, then open only the pages you need. Never read the whole folder.
+
+The index's **Why** column says why each page is here: **scope** pages belong to the spaces
+and page trees this workspace follows; **linked** pages were fetched because a ticket, PR or
+brief points to them; **pulled** ones were pulled by hand; **former** ones have left the
+scope.
+
+## Pages that aren't here
+
+The workspace only fetches pages within its scope. A brief or a sync lists links outside it
+as "not fetched", with their URLs. Don't fetch them another way: tell the person, who can
+add one with \`dev confluence scope add <link>\`.
+
+## Commands
+
+| Command | Does |
+| --- | --- |
+| \`dev confluence pull <link or id>\` | Pull a page and everything under it, within the scope |
+| \`dev confluence scope\` | Show what's in scope |
+
+Changing the scope, and anything that changes Confluence, is the person's call.`,
+      },
+    ],
   },
 };

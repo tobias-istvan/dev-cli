@@ -160,7 +160,7 @@ test("the generated hooks do nothing when dev isn't installed", () => {
     assert.equal(result.status, 0, command);
     assert.equal(result.stdout + result.stderr, "", command);
   }
-  assert.equal(claude.PreToolUse[0].matcher, "Bash");
+  assert.equal(claude.PreToolUse[0].matcher, "Bash|Edit|Write|MultiEdit|NotebookEdit");
 });
 
 // ---------------------------------------------------------------------------
@@ -186,6 +186,16 @@ test("the command check allows reads, asks before changes, and blocks the token"
     ["dev notes list", "allow"],
     ["dev notes post hello", "ask"],
     ["dev login github", "ask"],
+    ["dev add jira", "ask"],
+    ["dev remove notes", "ask"],
+    ["dev notes scope", "allow"],
+    ["dev notes scope --set '{ book: other }'", "ask"],
+    ["echo 'services: []' > dev.yaml", "ask"],
+    ["sed -i '' s/team/other/ dev.yaml", "ask"],
+    ["cat dev.yaml", undefined],
+    ["cat dev.yaml > copy.yaml", undefined],
+    ["rm ~/.config/dev/policy.json", "ask"],
+    ["sed -i '' s/a/b/ repository/config/dev.yaml", undefined],
     ["dev day start", undefined],
     ["ls /dev/null && find /dev -name x", undefined],
     ["gh pr view 1 > out.md", undefined],
@@ -215,4 +225,29 @@ test("the policy file changes decisions, and dev check explains them", () => {
 
   writeFileSync(path.join(config, "dev", "policy.json"), "{ broken");
   assert.match(dev(root, ["check", "gh pr merge 1"], { env }).out, /Decision: ask[\s\S]*Policy: defaults, because the policy file isn't valid JSON/);
+});
+
+test("file edits to dev.yaml or the dev settings ask first, and other files are left to the tool", () => {
+  const root = workspace();
+  const edit = (tool: "claude" | "copilot", file: string, name = tool === "claude" ? "Edit" : "edit") => {
+    const input = tool === "claude" ? { session_id: SESSION, tool_name: name, tool_input: { file_path: file } } : { sessionId: SESSION, toolName: name, toolArgs: JSON.stringify({ path: file }) };
+    const out = JSON.parse(dev(root, ["hook", "pre-tool", "--tool", tool], { input, env: tool === "claude" ? { CLAUDE_PROJECT_DIR: root } : {} }).out);
+    return (tool === "claude" ? out.hookSpecificOutput : out)?.permissionDecision;
+  };
+  assert.equal(edit("claude", path.join(root, "dev.yaml")), "ask");
+  assert.equal(edit("claude", path.join(root, "dev.yaml"), "Write"), "ask");
+  assert.equal(edit("copilot", path.join(root, "dev.yaml")), "ask");
+  assert.equal(edit("claude", path.join(base, "config", "dev", "policy.json")), "ask");
+  assert.equal(edit("claude", path.join(root, "repository", "dev.yaml")), undefined, "a dev.yaml in the code is the code's");
+  assert.equal(edit("claude", path.join(root, "AGENTS.md")), undefined);
+  assert.equal(edit("claude", path.join(root, "dev.yaml"), "Read"), undefined, "reading is fine");
+});
+
+test("config changes can be blocked outright in the policy", () => {
+  const root = workspace();
+  const config = path.join(base, "config-strict");
+  mkdirSync(path.join(config, "dev"), { recursive: true });
+  writeFileSync(path.join(config, "dev", "policy.json"), JSON.stringify({ config: "deny" }));
+  const out = dev(root, ["check", "dev notes scope --set '{ book: x }'"], { env: { XDG_CONFIG_HOME: config } }).out;
+  assert.match(out, /Decision: deny\n {2}dev notes scope: changes what Example notes syncs\. Rule config: deny/);
 });

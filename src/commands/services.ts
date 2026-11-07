@@ -84,11 +84,40 @@ export async function runRemove(program: Command, registry: Registry, out: Outpu
   }
 }
 
-export async function runScope(program: Command, registry: Registry, out: Output, entry: ServiceEntry, options: { set?: string }): Promise<void> {
+export async function runScope(
+  program: Command,
+  registry: Registry,
+  out: Output,
+  entry: ServiceEntry,
+  options: { set?: string; action?: string; items?: string[] },
+): Promise<void> {
   const root = requireWorkspaceRoot();
   const config = loadConfig(root);
   const current = config.services.find((s) => s.service === entry.key);
   if (!current) throw new DevError(`${entry.service.title} isn't enabled in this workspace.`, `Add it with "dev add ${entry.service.id}".`);
+
+  if (options.action) {
+    const change = options.action === "add" ? entry.service.scope.add : options.action === "remove" ? entry.service.scope.remove : undefined;
+    if (options.action !== "add" && options.action !== "remove") throw new DevError(`"${options.action}" isn't something scope can do.`, "Use add or remove.");
+    if (!change) throw new DevError(`${entry.service.title}'s scope can't be changed item by item.`, `Run "dev ${entry.service.id} scope" to choose it, or use --set.`);
+    if (!options.items || options.items.length === 0) throw new DevError(`Say what to ${options.action}, like a link or an id.`);
+
+    const result = change(current.scope, options.items);
+    for (const problem of result.problems) out.warn(problem.message);
+    const changed = "added" in result ? result.added : result.removed;
+    if (changed.length === 0) {
+      out.info("Nothing changed.");
+      if (result.problems.length > 0) process.exitCode = 1;
+      return;
+    }
+    const problems = entry.service.scope.validate(result.scope);
+    if (problems.length > 0) throw new DevError(`That would leave ${entry.service.title} with a scope that doesn't work:\n${formatProblems(problems)}`);
+    current.scope = result.scope;
+    saveConfig(root, config);
+    out.info(`Done: ${options.action === "add" ? "added" : "removed"} ${changed.join(", ")}. ${entry.service.title} now syncs ${entry.service.scope.describe(current.scope)}. Next: dev sync ${entry.service.id}`);
+    if (result.problems.length > 0) process.exitCode = 1;
+    return;
+  }
 
   if (!options.set && !(process.stdin.isTTY && process.stdout.isTTY)) {
     out.info(`${entry.service.title} syncs: ${entry.service.scope.describe(current.scope)}`);

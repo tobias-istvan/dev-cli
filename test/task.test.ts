@@ -99,8 +99,8 @@ test("task start fetches an item a service recognises, and what it links to", ()
   assert.ok(existsSync(path.join(root, "notes", "N-1.md")));
   assert.ok(existsSync(path.join(root, "notes", "N-2.md")), "the linked item is fetched too");
   const brief = readFileSync(path.join(root, "tasks", "N-1", "brief.md"), "utf8");
-  assert.match(brief, /- \[N-1\.md\]\(\.\.\/\.\.\/notes\/N-1\.md\)/);
-  assert.match(brief, /- \[N-2\.md\]\(\.\.\/\.\.\/notes\/N-2\.md\)/);
+  assert.match(brief, /- \[notes\/N-1\.md\]\(\.\.\/\.\.\/notes\/N-1\.md\)/);
+  assert.match(brief, /- \[notes\/N-2\.md\]\(\.\.\/\.\.\/notes\/N-2\.md\)/);
 });
 
 test("task status and cleanup report what's in flight, and remove only what's safe", () => {

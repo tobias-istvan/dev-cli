@@ -10,7 +10,7 @@ import { repositoryDir } from "../core/worktree.ts";
 import { requireWorkspaceRoot } from "../core/workspace.ts";
 import { syncServices } from "./sync.ts";
 
-export async function runDayStart(registry: Registry, out: Output, options: { sync: boolean }): Promise<void> {
+export async function runDayStart(registry: Registry, out: Output, options: { sync: boolean; referenced: boolean }): Promise<void> {
   const root = requireWorkspaceRoot();
   const config = loadConfig(root);
   let ok = true;
@@ -29,7 +29,7 @@ export async function runDayStart(registry: Registry, out: Output, options: { sy
         out.warn(`Code: couldn't update. ${(error as Error).message}`);
       }
     }
-    ok = (await syncServices(root, config, registry, out, enabledServices(config, registry))) && ok;
+    ok = (await syncServices(root, config, registry, out, enabledServices(config, registry), { referenced: options.referenced })) && ok;
   }
 
   await writeFile(path.join(root, "snapshot.md"), await buildSnapshot(root, config, registry, out, today()));

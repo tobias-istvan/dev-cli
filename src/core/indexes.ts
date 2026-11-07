@@ -23,6 +23,16 @@ interface Row {
   status: string;
   updated: string;
   link: string;
+  mine: boolean | null;
+  why: string | null;
+}
+
+/** Why an item is here, in one word. Older files without "via" are told apart by inScope. */
+function why(data: Record<string, unknown>): string | null {
+  if (typeof data.via === "string") return data.via;
+  if (data.inScope === true) return "scope";
+  if (data.inScope === false) return "linked";
+  return null;
 }
 
 function markdownFiles(folder: string, include: (file: string) => boolean): string[] {
@@ -61,6 +71,8 @@ export function buildIndex(folder: string, title: string, include: (file: string
       status: text(data.status),
       updated: text(data.updated).slice(0, 10),
       link: file.split(path.sep).join("/"),
+      mine: typeof data.mine === "boolean" ? data.mine : null,
+      why: why(data),
     });
   }
 
@@ -76,10 +88,26 @@ export function buildIndex(folder: string, title: string, include: (file: string
     "",
   ];
 
+  // Mine and Why only appear where the service records them, so other indexes stay as they are.
+  const showMine = rows.some((row) => row.mine !== null);
+  const showWhy = rows.some((row) => row.why !== null);
+  if (showWhy) {
+    lines.push("Why: scope is the work this workspace follows. parent, linked and pulled are context fetched because something points to them; former left the scope.", "");
+  }
+
   if (rows.length > 0) {
-    lines.push("| ID | Title | Status | Updated |", "| --- | --- | --- | --- |");
+    const headings = ["ID", "Title", "Status", ...(showMine ? ["Mine"] : []), ...(showWhy ? ["Why"] : []), "Updated"];
+    lines.push(`| ${headings.join(" | ")} |`, `| ${headings.map(() => "---").join(" | ")} |`);
     for (const row of rows) {
-      lines.push(`| [${cell(row.id)}](${encodeURI(row.link)}) | ${cell(row.title)} | ${cell(row.status)} | ${row.updated} |`);
+      const cells = [
+        `[${cell(row.id)}](${encodeURI(row.link)})`,
+        cell(row.title),
+        cell(row.status),
+        ...(showMine ? [row.mine ? "yes" : ""] : []),
+        ...(showWhy ? [row.why ?? ""] : []),
+        row.updated,
+      ];
+      lines.push(`| ${cells.join(" | ")} |`);
     }
     lines.push("");
   }

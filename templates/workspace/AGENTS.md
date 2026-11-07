@@ -32,6 +32,9 @@ the services yourself.
    says a login is missing, ask the person to run it.
 5. **Never commit sync output.** Leave it for the person to review, and summarise what
    changed.
+6. **For "what are my tasks?" or "what should I work on?", run `dev task list --mine`,**
+   not the index. In an index, items whose Why is parent, linked, pulled or former are
+   context for the work, not the work.
 {{rules}}
 ## Commands
 

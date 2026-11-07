@@ -45,8 +45,17 @@ export interface PluginContext {
   interactive: boolean;
 }
 
+/** How a service syncs and fetches, from its entry in dev.yaml. */
+export interface ServiceSettings {
+  /** "within-scope" (the default) never fetches items outside the scope; "anywhere" follows any link. */
+  fetch: "within-scope" | "anywhere";
+  /** "full" syncs the whole scope; "referenced" keeps only what tasks point to up to date. */
+  sync: "full" | "referenced";
+}
+
 export interface ServiceContext extends PluginContext {
   root: string;
+  settings: ServiceSettings;
   /** This service's folder, like <root>/jira. Versioning services have none. */
   folder: string | null;
   scope: Scope;
@@ -57,7 +66,7 @@ export interface ServiceContext extends PluginContext {
    * PR's title, and fetches the ones not already in the workspace. Returns each with its
    * file relative to the workspace root, when it could be fetched.
    */
-  references(text: string): Promise<Array<{ reference: Reference; file: string | null }>>;
+  references(text: string): Promise<Array<{ reference: Reference; file: string | null; outside?: boolean }>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +133,12 @@ export interface ScopeCapability {
   choose(context: ServiceContext): Promise<Scope>;
   /** Problems with a saved scope's shape. Must not reach the network. */
   validate(scope: Scope): Problem[];
+  /**
+   * Adds items to the scope by link or id, like a page someone linked to. Returns the new
+   * scope and what it added. Only for services whose scope is a list of things.
+   */
+  add?(scope: Scope, items: string[]): { scope: Scope; added: string[]; problems: Problem[] };
+  remove?(scope: Scope, items: string[]): { scope: Scope; removed: string[]; problems: Problem[] };
 }
 
 export interface SyncOptions {
@@ -172,6 +187,8 @@ export interface TaskContext {
   references: Reference[];
   /** A word for the branch name, like "feature" or "fix". */
   type?: string;
+  /** Links outside the scope, which the workspace doesn't fetch. Listed so a person can open them. */
+  notFetched?: string[];
 }
 
 export interface CommandOption {
@@ -211,6 +228,31 @@ export interface AgentFiles {
   mcp?: McpEntry[];
 }
 
+export interface TaskItem {
+  id: string;
+  title: string;
+  status: string;
+  done: boolean;
+  /** Assigned to the person running dev. */
+  mine: boolean;
+  /** In the service's scope, as opposed to fetched because something pointed to it. */
+  inScope: boolean;
+  /** Why it's in the workspace: scope, parent, linked, pulled or former. */
+  via: string;
+  /** When it was last synced, as written in its file. */
+  synced?: string;
+  due?: string;
+  /** The item's file, relative to the workspace root. */
+  file: string;
+  /** Other files that describe the task, like its parent ticket, where specs often live. */
+  related?: string[];
+}
+
+export interface TasksCapability {
+  /** The tasks in scope, from local files only. */
+  list(context: ServiceContext): Promise<TaskItem[]>;
+}
+
 export interface VersioningCapability {
   /** The repositories the account can see, most recently changed first. */
   listRepositories(context: PluginContext, credentials: Credentials): Promise<Array<{ id: string; description?: string }>>;
@@ -239,6 +281,13 @@ export interface Service {
   doctor?(context: ServiceContext): Promise<Problem[]>;
   /** Only for the versioning role. */
   versioning?: VersioningCapability;
+  /** For task sources, like Jira: what work there is. Their items drive the reference sweep. */
+  tasks?: TasksCapability;
+  /**
+   * For "referenced" syncing: update the items already in the workspace, without pulling
+   * the rest of the scope. New items arrive through the reference sweep.
+   */
+  refresh?(context: ServiceContext): Promise<SyncReport>;
   /**
    * Where this service's items are and which files they are, for its index.md. A
    * connected service defaults to its own folder and every Markdown file in it.

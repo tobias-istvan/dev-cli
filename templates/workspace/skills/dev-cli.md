@@ -17,6 +17,7 @@ For options, run the command with `--help`. This changes nothing and works anywh
 
 ## Rules
 
+- For "what are my tasks?", run `dev task list --mine`. It says when the data was synced.
 - Never run `dev login` or ask for credentials. If a login is missing, ask the person.
 - Never commit sync output. Summarise what changed and leave it for the person.
 - Commands marked as changing a service need the person's go-ahead in this conversation.
