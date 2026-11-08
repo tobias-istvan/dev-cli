@@ -8,6 +8,7 @@ import { issues } from "./issues.ts";
 import { ghPolicy } from "./policy.ts";
 import { DESCRIPTION, FOLDER, indexPulls, poll, pullRequest, waitingForReview } from "./pulls.ts";
 import { loadConfig } from "../../core/project-config.ts";
+import { reviewWorktree } from "../../core/worktree.ts";
 
 const REVIEW_SKILL = `# Reviewing a pull request
 
@@ -18,6 +19,8 @@ Review other people's PRs only, never your own.
    specs from other services.
 2. Read \`pr-description.md\`, then the linked items it lists. Read the diff with
    \`gh pr diff <N>\`, or \`gh pr diff <N> -- <path>\` for one file.
+   To run the code, or open it in an editor, run \`dev github pr <N> --worktree\`: it checks
+   the PR out in \`worktrees/pr-<N>\` on its own branch. Never check out a detached commit.
 3. Check, in this order:
    - **Does it do what the linked ticket asks?** Walk each acceptance criterion.
    - **Regression risk:** changed shared code, changed exports, removed tests.
@@ -194,7 +197,9 @@ const github: Plugin = {
           description: "Pull specific PRs into pull-requests/, with their comments and linked items",
           mark: "read",
           arguments: ["<numbers...>"],
-          async run(context, args) {
+          options: [{ flags: "--worktree", description: "Also check each out in worktrees/pr-<N>, on the PR's own branch" }],
+          help: "With --worktree, the PR's branch is checked out, tracking it on origin, never as a detached commit. Open it in an editor from worktrees/pr-<N>.",
+          async run(context, args, options) {
             const repo = loadConfig(context.root).versioning?.repo ?? "";
             const api = GitHubApi.from(context.credentials());
             for (const raw of args) {
@@ -202,6 +207,10 @@ const github: Plugin = {
               if (!Number.isInteger(number) || number < 1) throw new DevError(`"${raw}" isn't a PR number.`);
               const result = await pullRequest(context, api, repo, number);
               context.out.info(`#${number}: ${result.comments} comment${result.comments === 1 ? "" : "s"}${result.links.length > 0 ? `, linked ${result.links.join(", ")}` : ""}.`);
+              if (options.worktree) {
+                const tree = await reviewWorktree(context.root, `pr-${number}`, result.fork ? { forkRef: `refs/pull/${number}/head` } : { branch: result.head });
+                context.out.info(`  Worktree: worktrees/pr-${number} on ${tree.branch}${tree.existed ? ", already there" : ""}. Open it with: code worktrees/pr-${number}`);
+              }
             }
             indexPulls(context);
           },
@@ -212,6 +221,7 @@ const github: Plugin = {
         skills: [{ name: "pr-review", description: "Find pull requests that need review and review someone else's PR, writing the result to its review file. Use when asked to review PRs, or when the session context lists PRs waiting.", body: REVIEW_SKILL }],
         rules: [
           "Use `gh` for reading pull requests and issues. Anything that changes GitHub needs the person's go-ahead in this conversation.",
+          "To open a PR's code, in an editor or to run it, use `dev github pr <N> --worktree`. It checks the PR's own branch out in worktrees/pr-<N>. Never check out a detached commit for a PR.",
         ],
       },
     },

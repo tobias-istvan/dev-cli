@@ -38,7 +38,7 @@ interface Detail extends Summary {
   state: "open" | "closed";
   merged_at: string | null;
   base: { ref: string };
-  head: { ref: string };
+  head: { ref: string; repo?: { full_name: string } | null };
   additions: number;
   deletions: number;
   changed_files: number;
@@ -131,7 +131,7 @@ function renderComments(number: number, comments: Comment[], reviews: Comment[],
 }
 
 /** Pulls one PR. review.md is the reviewer's, and is never touched. */
-export async function pullRequest(context: ServiceContext, api: GitHubApi, repo: string, number: number): Promise<{ comments: number; links: string[] }> {
+export async function pullRequest(context: ServiceContext, api: GitHubApi, repo: string, number: number): Promise<{ comments: number; links: string[]; head: string; fork: boolean }> {
   const base = `/repos/${repo}`;
   const [pr, files, comments, reviews, inline] = await Promise.all([
     api.get<Detail>(`${base}/pulls/${number}`),
@@ -189,7 +189,12 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
   await mkdir(dir, { recursive: true });
   await writeItem(path.join(dir, DESCRIPTION), fields, body);
   await writeFile(path.join(dir, "comments.md"), renderComments(number, comments, reviews, inline));
-  return { comments: comments.length + reviews.filter((r) => (r.body ?? "").trim()).length + inline.length, links };
+  return {
+    comments: comments.length + reviews.filter((r) => (r.body ?? "").trim()).length + inline.length,
+    links,
+    head: pr.head.ref,
+    fork: Boolean(pr.head.repo && pr.head.repo.full_name !== repo),
+  };
 }
 
 export function indexPulls(context: ServiceContext): void {

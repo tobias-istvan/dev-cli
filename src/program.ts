@@ -382,6 +382,14 @@ what each service has to say. A step that fails doesn't stop the others.`),
     });
 
   day
+    .command("status")
+    .description("Say whether a sync is running, and when snapshot.md was written")
+    .action(async () => {
+      const { runDayStatus } = await import("./commands/day.ts");
+      runDayStatus(out);
+    });
+
+  day
     .command("end")
     .description("Save the day's sessions and update the day summary")
     .option("--date <date>", "Summarise another day (YYYY-MM-DD)")

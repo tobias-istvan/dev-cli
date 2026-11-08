@@ -11,6 +11,7 @@ import { parseConfig, configPath } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
 import { parseHookInput, readStdin, recordSession, saveSession } from "../core/sessions/index.ts";
 import { worktreeIds } from "../core/worktree.ts";
+import { describeRefresh, refreshState } from "../core/refresh.ts";
 import { findWorkspaceRoot } from "../core/workspace.ts";
 
 /**
@@ -77,9 +78,12 @@ export async function runSessionStart(registry: Registry, toolOption: string): P
         // A service that can't answer quickly is left out, never allowed to block the session.
       }
     }
-    if (await snapshotIsStale(root)) {
+    const state = refreshState(root);
+    if (state.running) {
+      lines.push("", `A sync is running: ${describeRefresh(state.refresh)}. Run \`dev day status\` to see when it's done, then re-read what it updates.`);
+    } else if (await snapshotIsStale(root)) {
       refreshInBackground(root);
-      lines.push("", "snapshot.md was out of date, so `dev day start` is refreshing it in the background. Re-read it before relying on it.");
+      lines.push("", "snapshot.md was out of date, so `dev day start` is refreshing it in the background. Run `dev day status` to see when it's done, then re-read snapshot.md.");
     }
   }
 

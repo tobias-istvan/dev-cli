@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Output, Reference, ServiceEntry, SyncReport } from "../plugins/types.ts";
 import { workspaceServiceContext } from "../core/context.ts";
 import { DevError, OutsideScope } from "../core/output.ts";
+import { describeRefresh, markRefresh, refreshState } from "../core/refresh.ts";
 import type { ProjectConfig } from "../core/project-config.ts";
 import { loadConfig } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
@@ -147,7 +148,15 @@ export async function runSync(registry: Registry, out: Output, only: string | un
     out.info("Nothing to sync: no enabled service syncs anything.");
     return;
   }
-  const ok = await syncServices(root, config, registry, out, targets, options);
+  const state = refreshState(root);
+  if (state.running) throw new DevError(`A sync is already running: ${describeRefresh(state.refresh)}.`, 'Wait for it: "dev day status" says when it\'s done.');
+  const clear = markRefresh(root, `dev sync${only ? ` ${only}` : ""}${options.referenced ? " --referenced" : ""}`);
+  let ok: boolean;
+  try {
+    ok = await syncServices(root, config, registry, out, targets, options);
+  } finally {
+    clear();
+  }
   out.info(ok ? "Done: synced. Review the changes before committing them." : "Done, with failures. Run it again to retry.");
   if (!ok) process.exitCode = 1;
 }

@@ -33,6 +33,8 @@ interface Detail extends Summary {
   state: "opened" | "closed" | "merged" | "locked";
   source_branch: string;
   target_branch: string;
+  source_project_id?: number;
+  target_project_id?: number;
 }
 
 interface Note {
@@ -74,7 +76,7 @@ export function indexMerges(context: ServiceContext): void {
 }
 
 /** Pulls one merge request. review.md is the reviewer's, and is never touched. */
-export async function pullMerge(context: ServiceContext, api: GitLabApi, repo: string, iid: number): Promise<{ comments: number; links: string[] }> {
+export async function pullMerge(context: ServiceContext, api: GitLabApi, repo: string, iid: number): Promise<{ comments: number; links: string[]; head: string; fork: boolean }> {
   const base = `/projects/${projectId(repo)}/merge_requests/${iid}`;
   const [mr, diffs, notes] = await Promise.all([
     api.get<Detail>(base),
@@ -138,7 +140,7 @@ export async function pullMerge(context: ServiceContext, api: GitLabApi, repo: s
         })
         .join("\n\n");
   await writeFile(path.join(dir, "comments.md"), `# MR !${iid}: comments\n\n${body}\n`);
-  return { comments: comments.length, links };
+  return { comments: comments.length, links, head: mr.source_branch, fork: mr.source_project_id !== undefined && mr.source_project_id !== mr.target_project_id };
 }
 
 export async function pollMerges(context: ServiceContext, options: { pull: boolean; includeDrafts: boolean; includeOwn: boolean }): Promise<PollResult> {

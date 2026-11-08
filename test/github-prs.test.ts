@@ -49,12 +49,16 @@ before(async () => {
         state: "open",
         merged_at: null,
         base: { ref: "main" },
-        head: { ref: "fix/login" },
+        head: { ref: "fix/login", repo: { full_name: "acme/web" } },
         additions: 3,
         deletions: 1,
         changed_files: 1,
       });
     }
+    if (pathname === "/repos/acme/web/pulls/2") {
+      return json(200, { ...summary(2, "fan", false, "From a fork"), body: "", state: "open", merged_at: null, base: { ref: "main" }, head: { ref: "main", repo: { full_name: "fan/web" } }, additions: 1, deletions: 0, changed_files: 1 });
+    }
+    if (/^\/repos\/acme\/web\/(pulls\/2\/(files|reviews|comments)|issues\/2\/comments)$/.test(pathname)) return json(200, []);
     if (pathname === "/repos/acme/web/pulls/9") return json(200, { ...summary(9, "alex", false, "Old"), state: "closed", merged_at: "2026-10-30T00:00:00Z" });
     if (pathname === "/repos/acme/web/pulls/1/files") return json(200, [{ filename: "src/login.ts", additions: 3, deletions: 1 }]);
     if (pathname === "/repos/acme/web/issues/1/comments") return json(200, [{ user: { login: "sam" }, body: "Looks close.", created_at: "2026-11-01T11:00:00Z" }]);
@@ -166,4 +170,45 @@ test("pr pulls one PR on demand, and --json gives only JSON", async () => {
   const json = JSON.parse((await dev(root, ["github", "prs", "--json", "--no-pull"])).out);
   assert.equal(json.repo, "acme/web");
   assert.deepEqual(json.needsReview.map((pr: { number: number }) => pr.number), [1]);
+});
+
+test("pr --worktree checks out the PR's own branch, never a detached commit", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const git = (cwd: string, ...args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" });
+  const seed = path.join(base, "seed");
+  mkdirSync(seed, { recursive: true });
+  git(seed, "init", "--quiet", "--initial-branch=main");
+  git(seed, "config", "user.email", "t@example.test");
+  git(seed, "config", "user.name", "T");
+  writeFileSync(path.join(seed, "README.md"), "code\n");
+  git(seed, "add", ".");
+  git(seed, "commit", "--quiet", "-m", "start");
+  git(seed, "switch", "--quiet", "-c", "fix/login");
+  writeFileSync(path.join(seed, "login.ts"), "fixed\n");
+  git(seed, "add", ".");
+  git(seed, "commit", "--quiet", "-m", "Fix login");
+  git(seed, "switch", "--quiet", "main");
+  const origin = path.join(base, "origin-prs.git");
+  git(base, "clone", "--quiet", "--bare", seed, origin);
+  // A fork's PR is only reachable through the host's special ref.
+  git(origin, "update-ref", "refs/pull/2/head", git(origin, "rev-parse", "fix/login").stdout.trim());
+
+  const root = realpathSync(mkdtempSync(path.join(base, "ws-")));
+  assert.equal((await dev(root, ["init", "--versioning", "github", "--repo", "acme/web", "--clone-url", origin])).code, 0);
+
+  const pulled = await dev(root, ["github", "pr", "1", "--worktree"]);
+  assert.equal(pulled.code, 0, pulled.err);
+  assert.match(pulled.out, /Worktree: worktrees\/pr-1 on fix\/login\. Open it with: code worktrees\/pr-1/);
+  const tree = path.join(root, "worktrees", "pr-1");
+  assert.equal(git(tree, "rev-parse", "--abbrev-ref", "HEAD").stdout.trim(), "fix/login", "on the branch, not detached");
+  assert.equal(git(tree, "rev-parse", "--abbrev-ref", "@{upstream}").stdout.trim(), "origin/fix/login", "tracking it, so pushes go back to the PR");
+  assert.ok(existsSync(path.join(tree, "login.ts")));
+  assert.match((await dev(root, ["github", "pr", "1", "--worktree"])).out, /already there/);
+
+  const fork = await dev(root, ["github", "pr", "2", "--worktree"]);
+  assert.equal(fork.code, 0, fork.err);
+  assert.equal(git(path.join(root, "worktrees", "pr-2"), "rev-parse", "--abbrev-ref", "HEAD").stdout.trim(), "pr-2");
+
+  assert.match((await dev(root, ["task", "cleanup"])).out, /Safe to remove, nothing would be lost: pr-1/, "everything in it is on the PR's branch");
+  assert.match(readFileSync(path.join(root, "AGENTS.md"), "utf8"), /dev github pr <N> --worktree/);
 });

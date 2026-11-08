@@ -251,3 +251,30 @@ test("config changes can be blocked outright in the policy", () => {
   const out = dev(root, ["check", "dev notes scope --set '{ book: x }'"], { env: { XDG_CONFIG_HOME: config } }).out;
   assert.match(out, /Decision: deny\n {2}dev notes scope: changes what Example notes syncs\. Rule config: deny/);
 });
+
+test("a running refresh is marked, so others can tell, and a killed one is noticed", () => {
+  const root = workspace();
+  const marker = path.join(root, ".dev", "state", "sync.json");
+
+  assert.match(dev(root, ["day", "status"]).out, /No sync is running\. There's no snapshot\.md yet\./);
+
+  mkdirSync(path.dirname(marker), { recursive: true });
+  writeFileSync(marker, JSON.stringify({ pid: process.pid, started: "2026-11-09T02:46:00.000Z", command: "dev sync jira" }));
+  assert.match(dev(root, ["day", "status"]).out, /A sync is running: dev sync jira, since \d\d:\d\d\./);
+  assert.match(dev(root, ["sync"]).err, /A sync is already running: dev sync jira/);
+  const second = dev(root, ["day", "start"]);
+  assert.equal(second.code, 1);
+  assert.match(second.err, /A sync is already running/);
+  assert.equal(dev(root, ["day", "start", "--no-sync"]).code, 0, "rewriting the snapshot from disk is still fine");
+
+  const start = dev(root, ["hook", "session-start", "--tool", "claude"], { input: { session_id: SESSION, cwd: root }, env: { CLAUDE_PROJECT_DIR: root } });
+  assert.match(JSON.parse(start.out).hookSpecificOutput.additionalContext, /A sync is running: dev sync jira, since \d\d:\d\d.*dev day status/);
+
+  writeFileSync(marker, JSON.stringify({ pid: 2147483646, started: "2026-11-09T02:46:00.000Z", command: "dev day start" }));
+  assert.match(dev(root, ["day", "status"]).out, /dev day start, started at \d\d:\d\d, stopped before finishing[\s\S]*No sync is running/);
+  assert.ok(!existsSync(marker), "the stale marker is cleared");
+
+  assert.equal(dev(root, ["day", "start"]).code, 0);
+  assert.equal(dev(root, ["sync"]).code, 0);
+  assert.ok(!existsSync(marker), "a finished sync removes its marker");
+});

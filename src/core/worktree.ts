@@ -176,6 +176,8 @@ export interface WorktreeState {
   dirty: string[];
   /** Commits the base has moved on since the branch started. */
   behind: number;
+  /** Commits not on the branch's upstream, or null when it has none. */
+  unpushed: string[] | null;
 }
 
 export async function worktreeIds(root: string): Promise<string[]> {
@@ -193,19 +195,24 @@ export async function inspectWorktree(root: string, id: string, base: string): P
   const dir = worktreeDir(root, id);
   const ref = (await gitMaybe(dir, ["rev-parse", "--verify", "--quiet", `origin/${base}`])) ? `origin/${base}` : base;
   const lines = (value: string | null) => (value ?? "").split("\n").filter(Boolean);
-  const [branch, unmerged, changed, dirty, behind] = await Promise.all([
+  const [branch, unmerged, changed, dirty, behind, unpushed] = await Promise.all([
     gitMaybe(dir, ["rev-parse", "--abbrev-ref", "HEAD"]),
     gitMaybe(dir, ["log", "--oneline", `${ref}..HEAD`]),
     gitMaybe(dir, ["diff", "--name-only", `${ref}...HEAD`]),
     gitMaybe(dir, ["status", "--short"]),
     gitMaybe(dir, ["rev-list", "--count", `HEAD..${ref}`]),
+    gitMaybe(dir, ["log", "--oneline", "@{upstream}..HEAD"]),
   ]);
-  return { id, dir, branch: branch ?? "?", unmerged: lines(unmerged), changed: lines(changed), dirty: lines(dirty), behind: Number(behind) || 0 };
+  return { id, dir, branch: branch ?? "?", unmerged: lines(unmerged), changed: lines(changed), dirty: lines(dirty), behind: Number(behind) || 0, unpushed: unpushed === null ? null : lines(unpushed) };
 }
 
-/** Safe means nothing is lost: no uncommitted changes, and every commit already in the base. */
+/**
+ * Safe means nothing is lost: no uncommitted changes, and every commit already in the base,
+ * or on the branch's own upstream, as with a PR checked out for review.
+ */
 export function isSafeToRemove(state: WorktreeState): boolean {
-  return state.unmerged.length === 0 && state.dirty.length === 0;
+  if (state.dirty.length > 0) return false;
+  return state.unmerged.length === 0 || (state.unpushed !== null && state.unpushed.length === 0);
 }
 
 export async function removeWorktree(root: string, state: WorktreeState): Promise<void> {
@@ -213,4 +220,42 @@ export async function removeWorktree(root: string, state: WorktreeState): Promis
   await git(repo, ["worktree", "remove", state.dir]);
   // The branch holds nothing the base doesn't, so deleting it loses nothing.
   if (state.branch && state.branch !== "HEAD") await gitMaybe(repo, ["branch", "-D", state.branch]);
+}
+
+/**
+ * A worktree for reviewing a PR or MR, on its own branch, so changes can be committed and
+ * pushed back, never a detached commit. A branch from the same repository is tracked from
+ * origin; one from a fork comes from the host's special ref (like pull/12/head) into a local
+ * branch named after the review.
+ */
+export async function reviewWorktree(
+  root: string,
+  id: string,
+  head: { branch: string } | { forkRef: string },
+): Promise<{ path: string; branch: string; existed: boolean }> {
+  const repo = requireClone(root);
+  const dir = worktreeDir(root, id);
+  if (existsSync(dir)) {
+    await addAgentFiles(root, dir);
+    return { path: dir, branch: await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]), existed: true };
+  }
+
+  let branch: string;
+  if ("branch" in head) {
+    branch = head.branch;
+    await git(repo, ["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+    const local = await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+    if (local) {
+      // The branch is already here, maybe checked out elsewhere: git says so if it is.
+      await git(repo, ["worktree", "add", dir, branch]);
+    } else {
+      await git(repo, ["worktree", "add", "--track", "-b", branch, dir, `origin/${branch}`]);
+    }
+  } else {
+    branch = id;
+    await git(repo, ["fetch", "origin", `+${head.forkRef}:refs/heads/${branch}`]);
+    await git(repo, ["worktree", "add", dir, branch]);
+  }
+  await addAgentFiles(root, dir);
+  return { path: dir, branch, existed: false };
 }

@@ -8,6 +8,7 @@ import { gitlabIssues } from "./issues.ts";
 import { DESCRIPTION, FOLDER, indexMerges, pollMerges, pullMerge, waitingForReview } from "./merges.ts";
 import { glabPolicy } from "./policy.ts";
 import { loadConfig } from "../../core/project-config.ts";
+import { reviewWorktree } from "../../core/worktree.ts";
 
 /** GitLab, on gitlab.com or a self-hosted server: code hosting, merge requests and issues. */
 
@@ -19,6 +20,8 @@ Review other people's merge requests only, never your own.
    into \`merge-requests/<N>/\`: \`mr-description.md\`, \`comments.md\`, and any linked tickets or
    specs from other services.
 2. Read \`mr-description.md\`, then the linked items. Read the diff with \`glab mr diff <N>\`.
+   To run the code, or open it in an editor, run \`dev gitlab mr <N> --worktree\`: it checks
+   the MR out in \`worktrees/mr-<N>\` on its own branch. Never check out a detached commit.
 3. Check, in this order: does it do what the linked ticket asks; regression risk; the
    repository's own standards in \`repository/AGENTS.md\`; consistency with the code around it.
 4. Write \`merge-requests/<N>/review.md\`, starting with \`# MR !<N>: <title>\`, then a one-line
@@ -132,7 +135,9 @@ const gitlab: Plugin = {
           description: "Pull specific merge requests, with their comments and linked items",
           mark: "read",
           arguments: ["<numbers...>"],
-          async run(context, args) {
+          options: [{ flags: "--worktree", description: "Also check each out in worktrees/mr-<N>, on the MR's own branch" }],
+          help: "With --worktree, the MR's branch is checked out, tracking it on origin, never as a detached commit. Open it in an editor from worktrees/mr-<N>.",
+          async run(context, args, options) {
             const repo = loadConfig(context.root).versioning?.repo ?? "";
             const api = GitLabApi.from(context.credentials());
             for (const raw of args) {
@@ -140,6 +145,10 @@ const gitlab: Plugin = {
               if (!Number.isInteger(iid) || iid < 1) throw new DevError(`"${raw}" isn't a merge request number.`);
               const result = await pullMerge(context, api, repo, iid);
               context.out.info(`!${iid}: ${result.comments} comment${result.comments === 1 ? "" : "s"}${result.links.length > 0 ? `, linked ${result.links.join(", ")}` : ""}.`);
+              if (options.worktree) {
+                const tree = await reviewWorktree(context.root, `mr-${iid}`, result.fork ? { forkRef: `refs/merge-requests/${iid}/head` } : { branch: result.head });
+                context.out.info(`  Worktree: worktrees/mr-${iid} on ${tree.branch}${tree.existed ? ", already there" : ""}. Open it with: code worktrees/mr-${iid}`);
+              }
             }
             indexMerges(context);
           },
@@ -147,7 +156,10 @@ const gitlab: Plugin = {
       ],
       agentFiles: {
         skills: [{ name: "mr-review", description: "Find merge requests that need review and review someone else's, writing the result to its review file. Use when asked to review MRs.", body: REVIEW_SKILL }],
-        rules: ["Use glab for reading merge requests and issues. Anything that changes GitLab needs the person's go-ahead in this conversation."],
+        rules: [
+          "Use glab for reading merge requests and issues. Anything that changes GitLab needs the person's go-ahead in this conversation.",
+          "To open an MR's code, in an editor or to run it, use `dev gitlab mr <N> --worktree`. It checks the MR's own branch out in worktrees/mr-<N>. Never check out a detached commit for an MR.",
+        ],
       },
     },
     gitlabIssues,
