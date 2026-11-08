@@ -5,6 +5,7 @@ import { choose, secret } from "../../core/prompt.ts";
 import { gitClone } from "../../core/run.ts";
 import { GitHubApi, ghAccounts, tokenFor, webBase } from "./api.ts";
 import { issues } from "./issues.ts";
+import { projects } from "./projects.ts";
 import { ghPolicy } from "./policy.ts";
 import { DESCRIPTION, FOLDER, indexPulls, poll, pullRequest, waitingForReview } from "./pulls.ts";
 import { loadConfig } from "../../core/project-config.ts";
@@ -226,6 +227,7 @@ const github: Plugin = {
       },
     },
     issues,
+    projects,
   ],
 };
 

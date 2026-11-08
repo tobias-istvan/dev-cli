@@ -29,3 +29,10 @@ export function formatProblems(problems: Problem[]): string {
     .map((problem) => `- ${problem.message}${problem.fix ? `\n  Fix: ${problem.fix}` : ""}`)
     .join("\n");
 }
+
+/** An error's message with its fix, for lists of failures where both should show. */
+export function describeError(error: unknown): string {
+  const message = (error as Error).message ?? String(error);
+  const fix = error instanceof DevError ? error.fix : undefined;
+  return fix ? `${message} ${fix}` : message;
+}

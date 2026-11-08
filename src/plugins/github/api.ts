@@ -105,6 +105,30 @@ export class GitHubApi {
     return (await (await this.fetch(`${apiBase()}${path}`)).json()) as T;
   }
 
+  /** A GraphQL query. GitHub Projects is only reachable this way. */
+  async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    let response: Response;
+    try {
+      response = await fetch(`${apiBase()}/graphql`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", "User-Agent": "dev-cli" },
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (error) {
+      throw new DevError(`Couldn't reach GitHub: ${(error as Error).message}.`, "Check your connection, then try again.");
+    }
+    if (response.status === 401) throw new DevError("GitHub rejected the saved login.", 'Run "dev login github" again.');
+    const body = (await response.json()) as { data?: T; errors?: Array<{ message: string; type?: string }> };
+    if (body.errors?.length) {
+      const message = body.errors.map((e) => e.message).join("; ");
+      if (/scope|read:project|INSUFFICIENT_SCOPES/i.test(message) || body.errors.some((e) => e.type === "INSUFFICIENT_SCOPES")) {
+        throw new DevError("The GitHub login can't read projects.", 'Give it the read:project scope: "gh auth refresh -s read:project", or a token with that scope.');
+      }
+      if (!body.data) throw new DevError(`GitHub answered: ${message}`);
+    }
+    return body.data as T;
+  }
+
   /** Follows Link headers until `limit` items, so a big account can't stall a command. */
   async list<T>(path: string, limit = 1000): Promise<T[]> {
     const items: T[] = [];

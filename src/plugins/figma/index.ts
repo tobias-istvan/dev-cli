@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Plugin, Reference, Service, ServiceContext, SyncReport } from "../types.ts";
 import { renderItem, splitFrontMatter, type CommonFields, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError, OutsideScope } from "../../core/output.ts";
+import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { secret } from "../../core/prompt.ts";
 import { mcpAvailable, mcpNode, mcpUrl, restNodes, whoAmI } from "./remote.ts";
 
@@ -189,7 +189,7 @@ async function check(context: ServiceContext): Promise<SyncReport> {
           else if (item.data.nodeId) report.failed.push({ id: String(item.data.id), reason: "the frame no longer exists in Figma" });
         }
       } catch (error) {
-        report.failed.push({ id: fileKey, reason: (error as Error).message });
+        report.failed.push({ id: fileKey, reason: describeError(error) });
       }
     }
   } else if (await mcpAvailable()) {

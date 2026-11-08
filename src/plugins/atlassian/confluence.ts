@@ -5,7 +5,7 @@ import { posix } from "node:path";
 import type { Reference, Scope, Service, ServiceContext, SyncReport } from "../types.ts";
 import { renderItem, splitFrontMatter, updateFields, type CommonFields, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError, OutsideScope } from "../../core/output.ts";
+import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, search as searchPrompt, searchRemote } from "../../core/prompt.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { convertStorageToMarkdown } from "./html.ts";
@@ -245,7 +245,7 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
           if (state !== "unchanged") report[state]++;
         } catch (error) {
           failed++;
-          report.failed.push({ id: `${entry.title} (${entry.id})`, reason: (error as Error).message });
+          report.failed.push({ id: `${entry.title} (${entry.id})`, reason: describeError(error) });
         }
       }),
     ),
@@ -340,7 +340,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
       total.failed.push(...result.report.failed);
       for (const warning of result.warnings.filter((w) => !/Unsupported macro|User mention/.test(w))) context.out.warn(`  ${warning}`);
     } catch (error) {
-      total.failed.push({ id, reason: (error as Error).message });
+      total.failed.push({ id, reason: describeError(error) });
     }
   }
 
@@ -430,7 +430,7 @@ async function refresh(context: ServiceContext): Promise<SyncReport> {
             report.updated++;
           }
         } catch (error) {
-          report.failed.push({ id: `${String(local.data.title)} (${id})`, reason: (error as Error).message });
+          report.failed.push({ id: `${String(local.data.title)} (${id})`, reason: describeError(error) });
         }
       }),
     ),

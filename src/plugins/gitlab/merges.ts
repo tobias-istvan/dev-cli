@@ -6,6 +6,7 @@ import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matt
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitLabApi, projectId } from "./api.ts";
+import { describeError } from "../../core/output.ts";
 
 /**
  * Other people's merge requests, pulled into merge-requests/<iid>/ for review, the GitLab
@@ -166,7 +167,7 @@ export async function pollMerges(context: ServiceContext, options: { pull: boole
           report.removed++;
         }
       } catch (error) {
-        report.failed.push({ id: `!${entry.name}`, reason: (error as Error).message });
+        report.failed.push({ id: `!${entry.name}`, reason: describeError(error) });
       }
     }
   }
@@ -188,7 +189,7 @@ export async function pollMerges(context: ServiceContext, options: { pull: boole
         if (mr.state === "new") report.added++;
         else report.updated++;
       } catch (error) {
-        report.failed.push({ id: `!${mr.number}`, reason: (error as Error).message });
+        report.failed.push({ id: `!${mr.number}`, reason: describeError(error) });
       }
     }
     indexMerges(context);

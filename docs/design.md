@@ -7,7 +7,7 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 5 in progress: Figma and GitLab done. Open questions are at the end.
+Status: phase 5 complete: Figma, GitLab, Notion and GitHub Projects. Open questions are at the end.
 
 ## Goals
 
@@ -331,6 +331,23 @@ check knows `glab` as it knows `gh`.
 
 Only projects the workspace knows count as GitLab issue references, so `owner/name#12`
 isn't claimed by GitLab when it means a GitHub issue.
+
+## Notion
+
+Notion is a docs source, like Confluence: each root page or database in scope is mirrored
+with everything under it, one folder per page, as `notion/<Title-id>/index.md`. A database
+gets a page listing its rows, and each row is a page with its properties in front matter.
+The login is an internal integration's secret, and the integration only sees pages someone
+has connected it to in Notion, on top of the scope. Pages whose last edit hasn't changed
+aren't fetched again, and file links Notion signs for an hour are named, not written.
+
+## GitHub Projects
+
+GitHub Projects is a task source on the GitHub login, through GraphQL, which needs the
+`read:project` scope. Each item on a board in scope, whether an issue, a PR or a draft,
+becomes `github-projects/<owner>-<number>/<item>/item.md`, with the board's own fields,
+like Status or Iteration. An item counts as done when its status says so, or its issue or
+PR is closed. A field whose name mentions due or target date becomes the due date.
 
 ## What phase 4 taught the interface
 

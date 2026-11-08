@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Reference, Scope, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError, OutsideScope } from "../../core/output.ts";
+import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, choose, search as searchPrompt } from "../../core/prompt.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { htmlToMarkdown } from "./html.ts";
@@ -231,7 +231,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
           if (result === "added") report.added++;
           else if (result === "updated") report.updated++;
         } catch (error) {
-          report.failed.push({ id: summary.key, reason: (error as Error).message });
+          report.failed.push({ id: summary.key, reason: describeError(error) });
         }
       }),
     ),

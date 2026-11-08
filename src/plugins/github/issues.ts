@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Reference, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError, OutsideScope } from "../../core/output.ts";
+import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { choose } from "../../core/prompt.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitHubApi, webBase } from "./api.ts";
@@ -142,7 +142,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
     try {
       issues = (await api.list<Issue>(`/repos/${repo}/issues?state=open${mineOnly ? `&assignee=${encodeURIComponent(me)}` : ""}`)).filter((i) => !i.pull_request);
     } catch (error) {
-      report.failed.push({ id: repo, reason: (error as Error).message });
+      report.failed.push({ id: repo, reason: describeError(error) });
       continue;
     }
     for (const issue of issues) {
@@ -155,7 +155,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
         if (result === "added") report.added++;
         else if (result === "updated") report.updated++;
       } catch (error) {
-        report.failed.push({ id, reason: (error as Error).message });
+        report.failed.push({ id, reason: describeError(error) });
       }
     }
   }
@@ -174,7 +174,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
         report.removed++;
       }
     } catch (error) {
-      report.failed.push({ id, reason: (error as Error).message });
+      report.failed.push({ id, reason: describeError(error) });
     }
   }
 

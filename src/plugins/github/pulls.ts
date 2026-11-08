@@ -6,6 +6,7 @@ import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matt
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitHubApi } from "./api.ts";
+import { describeError } from "../../core/output.ts";
 
 /**
  * Other people's pull requests, pulled into pull-requests/<N>/ for review.
@@ -227,7 +228,7 @@ export async function poll(context: ServiceContext, options: PollOptions): Promi
         removed.push({ number: Number(entry.name), state: status });
         report.removed++;
       } catch (error) {
-        report.failed.push({ id: `#${entry.name}`, reason: (error as Error).message });
+        report.failed.push({ id: `#${entry.name}`, reason: describeError(error) });
       }
     }
   }
@@ -245,7 +246,7 @@ export async function poll(context: ServiceContext, options: PollOptions): Promi
         if (pr.state === "new") report.added++;
         else report.updated++;
       } catch (error) {
-        report.failed.push({ id: `#${pr.number}`, reason: (error as Error).message });
+        report.failed.push({ id: `#${pr.number}`, reason: describeError(error) });
       }
     }
     indexPulls(context);
