@@ -1,6 +1,6 @@
 {
   "name": "@tobias.istvan/dev",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Set up a workspace around a code repository, and gather the tickets, docs and designs each task needs, for people and AI agents",
   "license": "MIT",
   "author": "Istvan Tobias",
