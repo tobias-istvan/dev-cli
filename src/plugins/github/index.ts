@@ -7,7 +7,7 @@ import { GitHubApi, ghAccounts, tokenFor, webBase } from "./api.ts";
 import { issues } from "./issues.ts";
 import { projects } from "./projects.ts";
 import { ghPolicy } from "./policy.ts";
-import { DESCRIPTION, FOLDER, indexPulls, poll, pullRequest, waitingForReview } from "./pulls.ts";
+import { DESCRIPTION, FOLDER, INDEX as PULLS_INDEX, indexPulls, poll, pullRequest, waitingForReview } from "./pulls.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { reviewWorktree } from "../../core/worktree.ts";
 
@@ -132,11 +132,11 @@ const github: Plugin = {
           const source = url ?? `${webBase()}/${repository}.git`;
           context.out.info(`Cloning ${source} into ${path.basename(target)}/`);
           // Over SSH, git uses the person's own keys. Over HTTPS, this login's token.
-          const token = source.startsWith("http") ? tokenFor(credentials) : undefined;
+          const token = source.startsWith("https:") && new URL(source).origin === new URL(webBase()).origin ? tokenFor(credentials) : undefined;
           return gitClone(source, target, token);
         },
       },
-      index: { folder: FOLDER, title: "Pull requests under review", include: (file) => path.posix.basename(file) === DESCRIPTION },
+      index: PULLS_INDEX,
 
       async sync(context) {
         return (await poll(context, { pull: true, includeDrafts: false, includeOwn: false })).report;
@@ -166,13 +166,14 @@ const github: Plugin = {
           name: "prs",
           description: "Find the PRs that need review, and pull them into pull-requests/",
           mark: "read",
+          writes: (options) => options.pull !== false,
           options: [
             { flags: "--no-pull", description: "Only report; don't pull anything" },
             { flags: "--include-drafts", description: "Include draft PRs" },
             { flags: "--include-own", description: "Include your own PRs" },
             { flags: "--json", description: "Machine-readable output" },
           ],
-          help: "Covers other people's PRs. Folders of PRs merged or closed since are removed. Only PRs that are new or changed are fetched.",
+          help: "Covers other people's PRs. Folders of PRs merged or closed since are retained and marked. Only PRs that are new or changed are fetched.",
           async run(context, _args, options) {
             const result = await poll(context, {
               pull: options.pull !== false,
@@ -180,8 +181,9 @@ const github: Plugin = {
               includeOwn: Boolean(options.includeOwn),
             });
             const attention = result.considered.filter((pr) => pr.state !== "current");
+            if (result.report.failed.length > 0) process.exitCode = 1;
             if (options.json) {
-              console.log(JSON.stringify({ repo: result.repo, open: result.open, needsReview: attention, removed: result.removed }, null, 2));
+              console.log(JSON.stringify({ repo: result.repo, open: result.open, needsReview: attention, removed: result.removed, failures: result.report.failed }, null, 2));
               return;
             }
             context.out.info(`${result.repo}: ${result.open} open, ${result.considered.length} to consider.`);
@@ -197,6 +199,7 @@ const github: Plugin = {
           name: "pr",
           description: "Pull specific PRs into pull-requests/, with their comments and linked items",
           mark: "read",
+          writes: true,
           arguments: ["<numbers...>"],
           options: [{ flags: "--worktree", description: "Also check each out in worktrees/pr-<N>, on the PR's own branch" }],
           help: "With --worktree, the PR's branch is checked out, tracking it on origin, never as a detached commit. Open it in an editor from worktrees/pr-<N>.",

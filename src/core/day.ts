@@ -1,5 +1,6 @@
+import { atomicWrite } from "./files.ts";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Output } from "../plugins/types.ts";
 import type { Registry } from "../plugins/registry.ts";
@@ -7,7 +8,7 @@ import { workspaceServiceContext } from "./context.ts";
 import { git, gitMaybe } from "./git.ts";
 import type { ProjectConfig } from "./project-config.ts";
 import { enabledServices } from "./scaffold.ts";
-import { defaultBranch, inspectWorktree, isSafeToRemove, repositoryDir, worktreeDir, worktreeIds } from "./worktree.ts";
+import { defaultBranch, inspectWorktrees, isSafeToRemove, repositoryDir, worktreeDir, worktreeIds } from "./worktree.ts";
 
 /**
  * The day: snapshot.md says what to work on, and work-sessions/<date>/summary.md records
@@ -29,6 +30,7 @@ export function today(): string {
 }
 
 export function dayDir(root: string, date: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) throw new Error("Date must be a valid YYYY-MM-DD calendar date.");
   return path.join(root, "work-sessions", date);
 }
 
@@ -111,9 +113,9 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
 
   if (existsSync(path.join(repositoryDir(root), ".git"))) {
     const base = await defaultBranch(repositoryDir(root));
-    const states = await Promise.all((await worktreeIds(root)).map((id) => inspectWorktree(root, id, base)));
+    const { states, broken } = await inspectWorktrees(root, base);
     const active = states.filter((s) => !isSafeToRemove(s));
-    const idle = states.filter(isSafeToRemove);
+    const idle = states.filter((s) => isSafeToRemove(s));
 
     lines.push("## Tasks in flight", "");
     if (active.length === 0) lines.push('_None. Start one with "dev task start <ref>"._');
@@ -122,6 +124,7 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
       if (state.behind > 0) parts.push(`${base} has moved on by ${state.behind}`);
       lines.push(`- [${state.id}](tasks/${state.id}/brief.md) on \`${state.branch}\` · ${parts.join(", ")}`);
     }
+    for (const { id, reason } of broken) lines.push(`- ${id}: git can't read this worktree (${reason})`);
     lines.push("");
     if (idle.length > 0) {
       lines.push(`Worktrees with nothing left in them: ${idle.map((s) => s.id).join(", ")}. Remove with \`dev task cleanup --remove\`.`, "");
@@ -155,9 +158,11 @@ export interface SessionLine {
 /** Commits made today in each worktree. */
 async function commitsOn(root: string, date: string): Promise<Array<{ id: string; commits: string[] }>> {
   const results: Array<{ id: string; commits: string[] }> = [];
+  const base = await defaultBranch(repositoryDir(root));
+  const seen = new Set<string>();
   for (const id of await worktreeIds(root)) {
-    const log = await gitMaybe(worktreeDir(root, id), ["log", "--oneline", "--no-merges", `--since=${date} 00:00`, `--until=${date} 23:59:59`]);
-    const commits = (log ?? "").split("\n").filter(Boolean);
+    const log = await gitMaybe(worktreeDir(root, id), ["log", "--oneline", "--no-merges", `origin/${base}..HEAD`, `--since=${date} 00:00`, `--until=${date} 23:59:59`]);
+    const commits = (log ?? "").split("\n").filter((line) => { const sha = line.split(" ")[0]; if (!line || seen.has(sha!)) return false; seen.add(sha!); return true; });
     if (commits.length > 0) results.push({ id, commits });
   }
   return results;
@@ -231,6 +236,6 @@ export async function writeSummary(
   ].join("\n");
 
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${text.trim()}\n`);
+  await atomicWrite(file, `${text.trim()}\n`);
   return file;
 }

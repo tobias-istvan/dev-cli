@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+import { safePath } from "./files.ts";
+import { createOnly } from "./files.ts";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DevError } from "./output.ts";
 
@@ -12,7 +15,7 @@ import { DevError } from "./output.ts";
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export function taskDir(root: string, id: string): string {
-  return path.join(root, "tasks", id);
+  return safePath(root, `tasks/${id}`);
 }
 
 /** A task id from a reference or a name: kept as it is if it's already a safe folder name. */
@@ -21,7 +24,14 @@ export function taskId(text: string): string {
   if (ID.test(trimmed)) return trimmed;
   const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
   if (!slug) throw new DevError(`"${text}" can't be used as a task name.`, "Use letters, digits, dots, hyphens or underscores.");
-  return slug;
+  return `${slug.slice(0, 51)}-${createHash("sha256").update(trimmed).digest("hex").slice(0, 12)}`;
+}
+
+/** The id the same reference got before ids carried a hash, so tasks started then are resumed, not duplicated. */
+export function legacyTaskId(text: string): string | null {
+  const trimmed = text.trim();
+  if (ID.test(trimmed)) return trimmed;
+  return trimmed.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || null;
 }
 
 export interface BriefContext {
@@ -43,7 +53,7 @@ function brief(context: BriefContext): string {
       : "_None found. Add links to the ticket, specs and designs this task needs._";
   const outside =
     context.notFetched && context.notFetched.length > 0
-      ? `\n\nOutside this workspace's scope, so not fetched. Open them yourself if needed:\n\n${context.notFetched.map((link) => `- ${link}`).join("\n")}`
+      ? `\n\nOutside this workspace's scope, so not fetched. Each says how to fetch it:\n\n${context.notFetched.map((link) => `- ${link}`).join("\n")}`
       : "";
 
   const prDescription = context.prTemplate
@@ -113,7 +123,7 @@ export async function writeTaskNotes(root: string, context: BriefContext): Promi
   for (const [name, content] of [["brief.md", brief(context)], ["progress.md", PROGRESS(context.id)]] as const) {
     const file = path.join(dir, name);
     if (existsSync(file)) continue;
-    await writeFile(file, content);
+    if (!await createOnly(file, content)) continue;
     written.push(path.join("tasks", context.id, name));
   }
   return written;

@@ -64,7 +64,7 @@ export function runDayStatus(out: Output): void {
     if (state.refresh.command === "dev day start") out.info("snapshot.md is rewritten when it ends. A background one logs to .dev/state/day-start.log.");
     return;
   }
-  if (state.interrupted) out.info(`${state.interrupted.command ?? "A sync"}, started at ${time(state.interrupted.started)}, stopped before finishing. Run it again.`);
+  if (state.interrupted) out.info(`${state.interrupted.command ?? "A sync"}, started at ${time(state.interrupted.started)}, stopped before finishing. The next sync takes over its lock.`);
   out.info(`No sync is running. ${written}`);
 }
 

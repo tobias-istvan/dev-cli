@@ -1,5 +1,6 @@
 import { constants, existsSync } from "node:fs";
 import { appendFile, copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { safePath } from "./files.ts";
 import path from "node:path";
 import { git, gitMaybe } from "./git.ts";
 import { DevError } from "./output.ts";
@@ -16,7 +17,7 @@ export function repositoryDir(root: string): string {
 }
 
 export function worktreeDir(root: string, id: string): string {
-  return path.join(root, "worktrees", id);
+  return safePath(root, `worktrees/${id}`);
 }
 
 export function requireClone(root: string): string {
@@ -68,6 +69,7 @@ applyTo: "**"
 
 The workspace root is two folders up. Read \`../../AGENTS.md\` before working here, and
 the task's notes in \`../../tasks/<this folder's name>/\`.
+For pr-N or mr-N reviews, use ../../pull-requests/N/ or ../../merge-requests/N/ instead.
 
 Never push and never open a pull request from here unless the person asks you to.
 `;
@@ -94,7 +96,7 @@ async function exclude(worktree: string, files: string[]): Promise<void> {
 export async function addAgentFiles(root: string, worktree: string): Promise<void> {
   const written: string[] = [];
   const add = async (file: string, write: (target: string) => Promise<void>): Promise<void> => {
-    const target = path.join(worktree, file);
+    const target = safePath(worktree, file);
     if (existsSync(target) || (await isTracked(worktree, file))) return;
     await mkdir(path.dirname(target), { recursive: true });
     await write(target);
@@ -103,7 +105,7 @@ export async function addAgentFiles(root: string, worktree: string): Promise<voi
 
   await add(INSTRUCTIONS_FILE, (target) => writeFile(target, INSTRUCTIONS));
   for (const file of COPIED) {
-    const source = path.join(root, file);
+    const source = safePath(root, file);
     if (existsSync(source)) await add(file, (target) => copyFile(source, target));
   }
   await exclude(worktree, written);
@@ -119,8 +121,8 @@ export type CopyResult = "copied" | "already there" | "not in the clone" | "not 
 export async function copyLocalFiles(repo: string, worktree: string, files: string[]): Promise<Array<{ file: string; result: CopyResult }>> {
   const results: Array<{ file: string; result: CopyResult }> = [];
   for (const file of files) {
-    const source = path.join(repo, file);
-    const target = path.join(worktree, file);
+    const source = safePath(repo, file);
+    const target = safePath(worktree, file);
     let result: CopyResult;
     if (existsSync(target)) result = "already there";
     else if (!existsSync(source)) result = "not in the clone";
@@ -153,7 +155,8 @@ export async function ensureWorktree(root: string, id: string, branch: string, b
     return { path: dir, branch: await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]), existed: true, base: baseBranch };
   }
 
-  // Start from what's on origin, not from a clone that may be days old.
+  // Start from what's on origin, not from a clone that may be days old. Offline, the last
+  // fetch will do: nothing is lost by starting from an older base.
   await gitMaybe(repo, ["fetch", "origin", "--prune"]);
   const start = (await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `origin/${baseBranch}`])) ? `origin/${baseBranch}` : baseBranch;
 
@@ -196,30 +199,59 @@ export async function inspectWorktree(root: string, id: string, base: string): P
   const ref = (await gitMaybe(dir, ["rev-parse", "--verify", "--quiet", `origin/${base}`])) ? `origin/${base}` : base;
   const lines = (value: string | null) => (value ?? "").split("\n").filter(Boolean);
   const [branch, unmerged, changed, dirty, behind, unpushed] = await Promise.all([
-    gitMaybe(dir, ["rev-parse", "--abbrev-ref", "HEAD"]),
-    gitMaybe(dir, ["log", "--oneline", `${ref}..HEAD`]),
-    gitMaybe(dir, ["diff", "--name-only", `${ref}...HEAD`]),
-    gitMaybe(dir, ["status", "--short"]),
-    gitMaybe(dir, ["rev-list", "--count", `HEAD..${ref}`]),
-    gitMaybe(dir, ["log", "--oneline", "@{upstream}..HEAD"]),
+    git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    git(dir, ["log", "--oneline", `${ref}..HEAD`]),
+    git(dir, ["diff", "--name-only", `${ref}...HEAD`]),
+    git(dir, ["status", "--short"]),
+    git(dir, ["rev-list", "--count", `HEAD..${ref}`]),
+    remoteUnpushed(dir),
   ]);
   return { id, dir, branch: branch ?? "?", unmerged: lines(unmerged), changed: lines(changed), dirty: lines(dirty), behind: Number(behind) || 0, unpushed: unpushed === null ? null : lines(unpushed) };
 }
 
-/**
- * Safe means nothing is lost: no uncommitted changes, and every commit already in the base,
- * or on the branch's own upstream, as with a PR checked out for review.
- */
-export function isSafeToRemove(state: WorktreeState): boolean {
-  if (state.dirty.length > 0) return false;
-  return state.unmerged.length === 0 || (state.unpushed !== null && state.unpushed.length === 0);
+/** Every worktree's state. One that git can't read is listed as broken, never taken as safe to remove. */
+export async function inspectWorktrees(root: string, base: string): Promise<{ states: WorktreeState[]; broken: Array<{ id: string; reason: string }> }> {
+  const ids = await worktreeIds(root);
+  const results = await Promise.allSettled(ids.map((id) => inspectWorktree(root, id, base)));
+  const states: WorktreeState[] = [];
+  const broken: Array<{ id: string; reason: string }> = [];
+  results.forEach((result, i) => {
+    if (result.status === "fulfilled") states.push(result.value);
+    else broken.push({ id: ids[i]!, reason: (result.reason as Error).message });
+  });
+  return { states, broken };
 }
 
-export async function removeWorktree(root: string, state: WorktreeState): Promise<void> {
+/** Fetches origin so the base and upstreams are current. False when origin can't be reached. */
+export async function fetchOrigin(repo: string): Promise<boolean> {
+  return (await gitMaybe(repo, ["fetch", "origin", "--prune"])) !== null;
+}
+
+/**
+ * Safe means nothing is lost: no uncommitted changes, and every commit already in the base,
+ * or on the branch's own upstream, as with a PR checked out for review. Without a fresh fetch
+ * the upstream can't be trusted (it may have been deleted on origin), so only the base counts.
+ */
+export function isSafeToRemove(state: WorktreeState, options: { trustUpstream?: boolean } = {}): boolean {
+  if (state.dirty.length > 0) return false;
+  return state.unmerged.length === 0 || (options.trustUpstream !== false && state.unpushed !== null && state.unpushed.length === 0);
+}
+
+/** Removes a worktree and its branch, after checking again that nothing would be lost. Returns a note when the branch is kept. */
+export async function removeWorktree(root: string, state: WorktreeState, options: { fetched: boolean }): Promise<string | null> {
   const repo = requireClone(root);
+  const fresh = await inspectWorktree(root, state.id, await defaultBranch(repo));
+  if (!isSafeToRemove(fresh, { trustUpstream: options.fetched }) || fresh.branch !== state.branch) throw new DevError("Worktree changed or is no longer safe to remove.");
   await git(repo, ["worktree", "remove", state.dir]);
-  // The branch holds nothing the base doesn't, so deleting it loses nothing.
-  if (state.branch && state.branch !== "HEAD") await gitMaybe(repo, ["branch", "-D", state.branch]);
+  if (!state.branch || state.branch === "HEAD") return null;
+  // The check above already proved every commit is in the base or on the upstream. git branch -d
+  // would compare with whatever the clone has checked out instead, and refuse merged branches.
+  try {
+    await git(repo, ["branch", "-D", state.branch]);
+    return null;
+  } catch (error) {
+    return `Kept branch ${state.branch}: ${(error as Error).message}`;
+  }
 }
 
 /**
@@ -235,27 +267,30 @@ export async function reviewWorktree(
 ): Promise<{ path: string; branch: string; existed: boolean }> {
   const repo = requireClone(root);
   const dir = worktreeDir(root, id);
-  if (existsSync(dir)) {
-    await addAgentFiles(root, dir);
-    return { path: dir, branch: await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]), existed: true };
+  const branch = "branch" in head ? head.branch : id;
+  const remote = "branch" in head ? `refs/remotes/origin/${branch}` : `refs/remotes/dev-reviews/${id}`;
+  const source = "branch" in head ? `refs/heads/${branch}` : head.forkRef;
+  await git(repo, ["fetch", "origin", `+${source}:${remote}`]);
+  const existed = existsSync(dir);
+  if (!existed) {
+    const local = await gitMaybe(repo, ["rev-parse", "--verify", `refs/heads/${branch}`]);
+    if (local) await git(repo, ["worktree", "add", dir, branch]);
+    else await git(repo, ["worktree", "add", "--no-track", "-b", branch, dir, remote]);
+    if ("branch" in head) await git(dir, ["branch", "--set-upstream-to", `origin/${branch}`]);
   }
-
-  let branch: string;
-  if ("branch" in head) {
-    branch = head.branch;
-    await git(repo, ["fetch", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
-    const local = await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
-    if (local) {
-      // The branch is already here, maybe checked out elsewhere: git says so if it is.
-      await git(repo, ["worktree", "add", dir, branch]);
-    } else {
-      await git(repo, ["worktree", "add", "--track", "-b", branch, dir, `origin/${branch}`]);
-    }
-  } else {
-    branch = id;
-    await git(repo, ["fetch", "origin", `+${head.forkRef}:refs/heads/${branch}`]);
-    await git(repo, ["worktree", "add", dir, branch]);
+  const current = await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (current !== branch) throw new DevError(`Review worktree has unexpected branch ${current}.`);
+  const localSha = await git(dir, ["rev-parse", "HEAD"]);
+  const remoteSha = await git(repo, ["rev-parse", remote]);
+  if (localSha !== remoteSha) {
+    if (await git(dir, ["status", "--porcelain"])) throw new DevError("Review worktree is stale and has local changes. Commit or preserve them before updating.");
+    await git(dir, ["merge", "--ff-only", remote]);
+    if (await git(dir, ["rev-parse", "HEAD"]) !== remoteSha) throw new DevError("Review branch contains additional local commits; review the divergence before proceeding.");
   }
   await addAgentFiles(root, dir);
-  return { path: dir, branch, existed: false };
+  return { path: dir, branch, existed };
+}
+async function remoteUnpushed(dir: string): Promise<string | null> {
+  const ref = await gitMaybe(dir, ["rev-parse", "--symbolic-full-name", "@{upstream}"]);
+  return ref?.startsWith("refs/remotes/") ? git(dir, ["log", "--oneline", `${ref}..HEAD`]) : null;
 }

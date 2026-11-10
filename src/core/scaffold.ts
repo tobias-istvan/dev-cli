@@ -1,5 +1,6 @@
+import { atomicWriteSync, safePath } from "./files.ts";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { ServiceEntry } from "../plugins/types.ts";
 import type { Registry } from "../plugins/registry.ts";
@@ -119,7 +120,7 @@ export function generatedFiles(config: ProjectConfig, registry: Registry, comman
         version: 1,
         hooks: {
           sessionStart: [{ type: "command", bash: guard("session-start --tool copilot"), cwd: ".", timeoutSec: 15 }],
-          sessionEnd: [{ type: "command", bash: guard("session-end --tool copilot >> .dev/state/hooks.log 2>&1"), cwd: ".", timeoutSec: 60 }],
+          sessionEnd: [{ type: "command", bash: guard("session-end --tool copilot"), cwd: ".", timeoutSec: 60 }],
           preToolUse: [{ type: "command", bash: guard("pre-tool --tool copilot"), cwd: ".", timeoutSec: 10 }],
         },
       },
@@ -133,7 +134,7 @@ export function generatedFiles(config: ProjectConfig, registry: Registry, comman
       {
         hooks: {
           SessionStart: [{ hooks: [{ type: "command", command: guard("session-start --tool claude", true), timeout: 15 }] }],
-          SessionEnd: [{ hooks: [{ type: "command", command: guard("session-end --tool claude >> .dev/state/hooks.log 2>&1", true), timeout: 60 }] }],
+          SessionEnd: [{ hooks: [{ type: "command", command: guard("session-end --tool claude", true), timeout: 60 }] }],
           PreToolUse: [{ matcher: "Bash|Edit|Write|MultiEdit|NotebookEdit", hooks: [{ type: "command", command: guard("pre-tool --tool claude"), timeout: 10 }] }],
         },
       },
@@ -161,7 +162,7 @@ export function gitignoreLines(config: ProjectConfig, registry: Registry): strin
 
 /** Replaces dev's block in .gitignore, keeping every other line. */
 function updateGitignore(root: string, lines: string[]): "created" | "updated" | "unchanged" {
-  const file = path.join(root, ".gitignore");
+  const file = safePath(root, ".gitignore");
   const block = [GITIGNORE_START, ...lines, GITIGNORE_END].join("\n");
   const existing = existsSync(file) ? readFileSync(file, "utf8") : null;
 
@@ -178,13 +179,13 @@ function updateGitignore(root: string, lines: string[]): "created" | "updated" |
   }
 
   if (next === existing) return "unchanged";
-  writeFileSync(file, next);
+  atomicWriteSync(file, next);
   return existing === null ? "created" : "updated";
 }
 
 function readRecord(root: string): Record<string, string> {
   try {
-    return JSON.parse(readFileSync(path.join(root, RECORD), "utf8")) as Record<string, string>;
+    return JSON.parse(readFileSync(safePath(root, RECORD), "utf8")) as Record<string, string>;
   } catch {
     return {};
   }
@@ -197,16 +198,16 @@ export function scaffold(root: string, config: ProjectConfig, registry: Registry
   const files = generatedFiles(config, registry, commands);
 
   for (const folder of ["tasks", "worktrees", ".dev/state", ...enabledServices(config, registry).filter((e) => e.service.role === "connected").map((e) => e.service.id)]) {
-    mkdirSync(path.join(root, folder), { recursive: true });
+    mkdirSync(safePath(root, folder), { recursive: true });
   }
 
   for (const [relative, content] of files) {
-    const file = path.join(root, relative);
+    const file = safePath(root, relative);
     const wanted = hash(content);
 
     if (!existsSync(file)) {
       mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, content);
+      atomicWriteSync(file, content);
       record[relative] = wanted;
       result.created.push(relative);
       continue;
@@ -217,7 +218,7 @@ export function scaffold(root: string, config: ProjectConfig, registry: Registry
       record[relative] = wanted;
       result.unchanged.push(relative);
     } else if (previous[relative] === current) {
-      writeFileSync(file, content);
+      atomicWriteSync(file, content);
       record[relative] = wanted;
       result.updated.push(relative);
     } else {
@@ -229,7 +230,7 @@ export function scaffold(root: string, config: ProjectConfig, registry: Registry
 
   for (const [relative, recorded] of Object.entries(previous)) {
     if (files.has(relative)) continue;
-    const file = path.join(root, relative);
+    const file = safePath(root, relative);
     if (existsSync(file) && hash(readFileSync(file, "utf8")) === recorded) {
       rmSync(file);
       result.removed.push(relative);
@@ -241,8 +242,8 @@ export function scaffold(root: string, config: ProjectConfig, registry: Registry
   const gitignore = updateGitignore(root, gitignoreLines(config, registry));
   result[gitignore].push(".gitignore");
 
-  mkdirSync(path.join(root, ".dev"), { recursive: true });
-  writeFileSync(path.join(root, RECORD), `${JSON.stringify(Object.fromEntries(Object.entries(record).sort()), null, 2)}\n`);
+  mkdirSync(safePath(root, ".dev"), { recursive: true });
+  atomicWriteSync(safePath(root, RECORD), `${JSON.stringify(Object.fromEntries(Object.entries(record).sort()), null, 2)}\n`);
 
   for (const list of Object.values(result)) list.sort();
   return result;

@@ -89,7 +89,7 @@ export async function runScope(
   registry: Registry,
   out: Output,
   entry: ServiceEntry,
-  options: { set?: string; action?: string; items?: string[] },
+  options: { set?: string; choose?: boolean; action?: string; items?: string[] },
 ): Promise<void> {
   const root = requireWorkspaceRoot();
   const config = loadConfig(root);
@@ -119,9 +119,9 @@ export async function runScope(
     return;
   }
 
-  if (!options.set && !(process.stdin.isTTY && process.stdout.isTTY)) {
+  if (!options.set && !options.choose) {
     out.info(`${entry.service.title} syncs: ${entry.service.scope.describe(current.scope)}`);
-    out.info("Change it with --set, or run this at a terminal to choose.");
+    out.info("Change it with --set, or use --choose at a terminal.");
     return;
   }
   current.scope = await scopeFor(root, entry, registry, out, options.set);

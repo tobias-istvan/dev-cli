@@ -1,6 +1,8 @@
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { atomicWriteSync, safePath } from "./files.ts";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { missingFields, splitFrontMatter } from "./front-matter.ts";
+import type { Service } from "../plugins/types.ts";
 
 /**
  * Builds a service folder's index.md from its items' front matter, so every index has
@@ -112,7 +114,20 @@ export function buildIndex(folder: string, title: string, include: (file: string
     lines.push("");
   }
 
-  const file = path.join(folder, INDEX_FILE);
-  writeFileSync(file, lines.join("\n"));
+  const file = safePath(folder, INDEX_FILE);
+  atomicWriteSync(file, lines.join("\n"));
   return { file, items: rows.length, skipped };
+}
+
+/** Every item file of a service, relative to the workspace root. */
+export function serviceFiles(root: string, service: Service): string[] {
+  const name = service.index?.folder ?? service.id;
+  const folder = path.join(root, name);
+  return existsSync(folder) ? markdownFiles(folder, service.index?.include ?? (() => true)).map((file) => `${name}/${file.split(path.sep).join("/")}`) : [];
+}
+
+/** Rebuilds a service's index.md with the folder, title and files it declares. Null when the folder doesn't exist yet. */
+export function buildServiceIndex(root: string, service: Service): IndexResult | null {
+  const folder = path.join(root, service.index?.folder ?? service.id);
+  return existsSync(folder) ? buildIndex(folder, service.index?.title ?? service.title, service.index?.include) : null;
 }

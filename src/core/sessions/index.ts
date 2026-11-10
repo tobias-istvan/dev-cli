@@ -1,10 +1,13 @@
-import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { safePath, atomicWrite } from "../files.ts";
+import { configDir } from "../paths.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { Output } from "../../plugins/types.ts";
 import type { Registry } from "../../plugins/registry.ts";
-import { loadCredentials } from "../credentials.ts";
+import { credentialSets } from "../credentials.ts";
 import type { SessionLine } from "../day.ts";
 import { renderSession, type RenderOptions } from "./render.ts";
 
@@ -105,7 +108,7 @@ function sessionsDir(root: string): string {
 
 function folderFor(root: string, started: string, sessionId: string): string {
   const time = new Date(started).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }).replace(":", "-");
-  return path.join(sessionsDir(root), new Date(started).toLocaleDateString("en-CA"), `${time}-${sessionId.slice(0, 8)}`);
+  return path.join(sessionsDir(root), new Date(started).toLocaleDateString("en-CA"), `${time}-${sessionId}`);
 }
 
 /** A session keeps one folder, even when it's resumed on a later day. */
@@ -115,7 +118,10 @@ async function findFolder(root: string, sessionId: string): Promise<string | nul
   for (const date of await readdir(sessionsDir(root), { withFileTypes: true })) {
     if (!date.isDirectory()) continue;
     for (const name of await readdir(path.join(sessionsDir(root), date.name))) {
-      if (name.endsWith(suffix)) return path.join(sessionsDir(root), date.name, name);
+      if (name.endsWith(suffix) || name.endsWith(`-${sessionId}`)) {
+        const candidate = path.join(sessionsDir(root), date.name, name);
+        if ((await readReference(candidate))?.sessionId === sessionId) return candidate;
+      }
     }
   }
   return null;
@@ -123,7 +129,8 @@ async function findFolder(root: string, sessionId: string): Promise<string | nul
 
 async function readReference(folder: string): Promise<SessionReference | null> {
   try {
-    return JSON.parse(await readFile(path.join(folder, REFERENCE), "utf8")) as SessionReference;
+    const value = JSON.parse(await readFile(path.join(folder, REFERENCE), "utf8"));
+    return validReference(value) ? value : null;
   } catch {
     return null;
   }
@@ -131,7 +138,7 @@ async function readReference(folder: string): Promise<SessionReference | null> {
 
 async function writeReference(folder: string, reference: SessionReference): Promise<void> {
   await mkdir(folder, { recursive: true });
-  await writeFile(path.join(folder, REFERENCE), `${JSON.stringify(reference, null, 2)}\n`);
+  await atomicWrite(path.join(folder, REFERENCE), `${JSON.stringify(reference, null, 2)}\n`);
 }
 
 function workingDirOf(root: string, cwd: string | null): string {
@@ -141,13 +148,17 @@ function workingDirOf(root: string, cwd: string | null): string {
 }
 
 export async function recordSession(root: string, input: HookInput, event: "start" | "end"): Promise<string | null> {
-  if (!input.sessionId) return null;
+  if (!input.sessionId || !/^[A-Za-z0-9_-]{1,128}$/.test(input.sessionId)) return null;
   const now = new Date().toISOString();
   const folder = (await findFolder(root, input.sessionId)) ?? folderFor(root, now, input.sessionId);
   const existing = await readReference(folder);
-  const workingDir = existing?.workingDir ?? workingDirOf(root, input.cwd);
+  // Where the session started, since a later hook can fire from another folder, and the
+  // transcript is filed under the first. This machine's own record is believed first.
+  const workingDir = readProvenance(root, { tool: input.tool, sessionId: input.sessionId })?.workingDir ?? existing?.workingDir ?? workingDirOf(root, input.cwd);
+  safePath(root, path.relative(root, path.join(folder, REFERENCE)));
+  if (workingDir !== ".") safePath(root, workingDir);
 
-  await writeReference(folder, {
+  const reference: SessionReference = {
     version: 1,
     tool: input.tool,
     sessionId: input.sessionId,
@@ -156,7 +167,9 @@ export async function recordSession(root: string, input: HookInput, event: "star
     endReason: event === "end" ? input.reason : null,
     task: existing?.task ?? workingDir.match(WORKTREE)?.[1] ?? null,
     workingDir,
-  });
+  };
+  await writeReference(folder, reference);
+  await atomicWrite(provenanceFile(root, reference), JSON.stringify({ tool: reference.tool, sessionId: reference.sessionId, workingDir: reference.workingDir }));
   return folder;
 }
 
@@ -187,7 +200,11 @@ function copilotFile(sessionId: string): string {
 }
 
 function locate(root: string, reference: SessionReference): string | null {
-  if (reference.tool === "vscode") return null;
+  if (!validReference(reference) || reference.tool === "vscode") return null;
+  // A reference from before provenance was recorded has none. A workspace is one person's
+  // for now, so it is this machine's own; team support has to require the record.
+  const trusted = readProvenance(root, reference);
+  if (trusted && trusted.workingDir !== reference.workingDir) return null;
   const file =
     reference.tool === "copilot" ? copilotFile(reference.sessionId) : path.join(claudeDir(path.join(root, reference.workingDir)), `${reference.sessionId}.jsonl`);
   return existsSync(file) ? file : null;
@@ -244,9 +261,14 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
 export function createRedactor(registry: Registry): (text: string) => string {
   const literals = new Set<string>();
   for (const plugin of registry.plugins) {
-    const saved = loadCredentials(plugin.name);
-    if (!saved || !plugin.secrets) continue;
-    for (const secret of plugin.secrets(saved.credentials)) if (secret.length >= 8) literals.add(secret);
+    if (!plugin.secrets) continue;
+    for (const values of credentialSets(plugin.name)) {
+      for (const secret of plugin.secrets(values)) if (secret.length >= 8) {
+        literals.add(secret);
+        literals.add(encodeURIComponent(secret));
+      }
+      if (values.email && values.token) literals.add(Buffer.from(`${values.email}:${values.token}`).toString("base64"));
+    }
   }
   const literal = literals.size > 0 ? new RegExp([...literals].map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g") : null;
 
@@ -262,13 +284,14 @@ export function createRedactor(registry: Registry): (text: string) => string {
 
 /** Saves one session's transcript. Returns false when it isn't on this machine or has no conversation yet. */
 export async function saveSession(root: string, folder: string, reference: SessionReference, registry: Registry): Promise<boolean> {
+  safePath(root, path.relative(root, path.join(folder, "session.md")));
   const file = locate(root, reference);
   if (!file) return false;
   const lines = parseLines(await readFile(file, "utf8"));
   const entries = reference.tool === "copilot" ? copilotEntries(lines, reference.sessionId) : lines;
   const { markdown, meta } = renderSession(entries as any[], DEFAULT_RENDER, reference.tool === "copilot" ? "copilot" : "claude", createRedactor(registry));
   if (!meta.date) return false;
-  await writeFile(path.join(folder, "session.md"), markdown);
+  await atomicWrite(path.join(folder, "session.md"), markdown);
   return true;
 }
 
@@ -308,4 +331,29 @@ export async function saveSessions(root: string, registry: Registry, out: Output
       file: existsSync(path.join(folder, "session.md")) ? `${path.basename(folder)}/session.md` : null,
     }))
     .sort((a, b) => a.time.localeCompare(b.time));
+}
+
+function validReference(value: unknown): value is SessionReference {
+  if (!value || typeof value !== "object") return false;
+  const r = value as SessionReference;
+  return r.version === 1 && ["claude", "copilot", "vscode"].includes(r.tool) &&
+    typeof r.sessionId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(r.sessionId) &&
+    typeof r.started === "string" && Number.isFinite(Date.parse(r.started)) &&
+    typeof r.workingDir === "string" && WORKING_DIR.test(r.workingDir);
+}
+
+const WORKING_DIR = /^(\.|worktrees\/[A-Za-z0-9][A-Za-z0-9._-]*)$/;
+
+/** What this machine recorded about a session it ran, if it did. */
+function readProvenance(root: string, r: Pick<SessionReference, "tool" | "sessionId">): { workingDir: string } | null {
+  try {
+    const trusted = JSON.parse(readFileSync(provenanceFile(root, r), "utf8"));
+    if (trusted.tool !== r.tool || trusted.sessionId !== r.sessionId || typeof trusted.workingDir !== "string" || !WORKING_DIR.test(trusted.workingDir)) return null;
+    return { workingDir: trusted.workingDir };
+  } catch { return null; }
+}
+
+function provenanceFile(root: string, r: Pick<SessionReference, "tool" | "sessionId">): string {
+  const name = createHash("sha256").update(`${path.resolve(root)}:${r.tool}:${r.sessionId}`).digest("hex");
+  return safePath(configDir(), `session-provenance/${name}.json`);
 }

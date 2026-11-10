@@ -60,6 +60,7 @@ const plugin: Plugin = {
           name: "post",
           description: "Post a note",
           mark: "change",
+          writes: true,
           arguments: ["<text>"],
           options: [{ flags: "--pin", description: "Pin it" }],
           async run(context, args, options) {

@@ -1,18 +1,21 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import type { Reference, Scope, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError, OutsideScope, describeError } from "../../core/output.ts";
+import { describeOutside } from "../../core/links.ts";
+import { DevError, NotFound, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, choose, search as searchPrompt } from "../../core/prompt.ts";
+import { mirrorAttachments } from "./attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { htmlToMarkdown } from "./html.ts";
 
 /**
  * Jira: the tickets in scope, each in its own folder as jira/<KEY>/ticket.md, so research notes
  * or images can sit beside it and are never touched by a sync. The scope is a JQL
- * search. Tickets fetched on demand, like a parent or one named in a PR, are kept too,
+ * search. Attachments are kept in the ticket's attachments/ folder, unless the scope says
+ * `attachments: false`. Tickets fetched on demand, like a parent or one named in a PR, are kept too,
  * marked as outside the scope, so a sync never removes them.
  */
 
@@ -40,7 +43,7 @@ interface Issue {
       inwardIssue?: { key: string; fields?: { summary?: string } };
       outwardIssue?: { key: string; fields?: { summary?: string } };
     }>;
-    attachment?: Array<{ filename: string; size?: number }>;
+    attachment?: Array<{ id: string; filename: string; size?: number; content?: string }>;
     comment?: { comments?: Array<{ id: string; author?: { displayName?: string }; created?: string }> };
     [field: string]: unknown;
   };
@@ -56,6 +59,8 @@ function folder(context: ServiceContext): string {
 }
 
 const TICKET = "ticket.md";
+/** The download limit: a bigger attachment is listed in the ticket, not fetched. */
+const MAX_ATTACHMENT = 25 * 1024 * 1024;
 
 function file(context: ServiceContext, key: string): string {
   return path.join(folder(context), key, TICKET);
@@ -113,12 +118,37 @@ interface Lookups {
 async function render(context: ServiceContext, api: AtlassianClient, issue: Issue, ids: Lookups, via: Via): Promise<"added" | "updated" | "unchanged"> {
   const f = issue.fields;
   const rendered = issue.renderedFields ?? {};
-  const html = (value: unknown) => (typeof value === "string" ? value : "");
+  const target = file(context, issue.key);
+
+  // Attachments sit next to the ticket. One too big to download is listed, not fetched.
+  const attached = f.attachment ?? [];
+  const wanted = context.scope.attachments !== false ? attached.filter((a) => (a.size ?? 0) <= MAX_ATTACHMENT) : [];
+  let failed = 0;
+  const files = await mirrorAttachments(
+    api,
+    path.dirname(target),
+    wanted.map((a) => ({ key: a.id, title: a.filename, link: a.content ?? `/rest/api/3/attachment/content/${a.id}`, version: 1 })),
+    (message) => {
+      failed++;
+      context.out.warn(`  ${issue.key}: ${message}`);
+    },
+    false,
+  );
+  // Jira's HTML points at its own attachment and thumbnail addresses, and at site paths.
+  const html = (value: unknown) =>
+    typeof value !== "string"
+      ? ""
+      : value
+          .replace(/\b(src|href)="([^"]*\/(?:attachment\/(?:content|thumbnail)|secure\/(?:attachment|thumbnail))\/(\d+)[^"]*)"/g, (whole, attribute: string, _address: string, id: string) =>
+            files.has(id) ? `${attribute}="${encodeURI(files.get(id)!)}"` : whole,
+          )
+          .replace(/\b(src|href)="\/(?!\/)/g, `$1="${api.site.url}/`);
   const description = htmlToMarkdown(html(rendered.description)) || "_No description._";
   const acceptance = ids.acceptance ? htmlToMarkdown(html(rendered[ids.acceptance])) : "";
   const points = ids.points && typeof f[ids.points] === "number" ? (f[ids.points] as number) : null;
 
-  const link = (key: string) => (existsSync(file(context, key)) ? `[${key}](../${key}/${TICKET})` : `[${key}](${api.browseUrl(key)})`);
+  // Written as Jira links: the ones to tickets in the workspace are made local below.
+  const link = (key: string) => `[${key}](${api.browseUrl(key)})`;
   const relations = [
     ...(f.parent ? [`- Parent (${f.parent.fields?.issuetype?.name ?? "issue"}): ${link(f.parent.key)} ${f.parent.fields?.summary ?? ""}`] : []),
     ...(f.subtasks ?? []).map((t) => `- Sub-task: ${link(t.key)} [${t.fields?.status?.name ?? "?"}] ${t.fields?.summary ?? ""}`),
@@ -153,7 +183,15 @@ async function render(context: ServiceContext, api: AtlassianClient, issue: Issu
     "",
     "## Attachments",
     "",
-    (f.attachment ?? []).length > 0 ? (f.attachment ?? []).map((a) => `- ${a.filename}${a.size ? ` (${Math.round(a.size / 1024)} KB)` : ""}`).join("\n") : "_None._",
+    attached.length > 0
+      ? attached
+          .map((a) => {
+            const size = a.size ? `${Math.round(a.size / 1024)} KB` : "";
+            const local = files.get(a.id);
+            return local ? `- [${a.filename}](${encodeURI(local)})${size ? ` (${size})` : ""}` : `- ${a.filename} (${[size, "not downloaded"].filter(Boolean).join(", ")})`;
+          })
+          .join("\n")
+      : "_None._",
     "",
     `## Comments (${comments.length})`,
     "",
@@ -161,7 +199,7 @@ async function render(context: ServiceContext, api: AtlassianClient, issue: Issu
   ].join("\n");
 
   return writeItem(
-    file(context, issue.key),
+    target,
     {
       id: issue.key,
       title: f.summary ?? "",
@@ -175,14 +213,16 @@ async function render(context: ServiceContext, api: AtlassianClient, issue: Issu
       statusCategory: f.status?.statusCategory?.key ?? "",
       priority: f.priority?.name ?? "",
       assignee: f.assignee?.displayName ?? "",
+      viewer: ids.me,
       mine: Boolean(ids.me && f.assignee?.accountId === ids.me),
       due: f.duedate ?? "",
       points,
       labels: f.labels ?? [],
+      ...(context.scope.attachments !== false ? { attachments: files.size, ...(failed > 0 ? { attachmentsFailed: failed } : {}) } : {}),
       inScope: via === "scope",
       via,
     },
-    body,
+    await context.localize(body, target),
   );
 }
 
@@ -205,8 +245,11 @@ async function localItems(context: ServiceContext): Promise<Array<{ key: string;
   return items;
 }
 
+const INDEX: NonNullable<Service["index"]> = { folder: "jira", title: "Jira tickets", include: (f) => path.posix.basename(f) === TICKET };
+
 function index(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "Jira tickets", (f) => path.posix.basename(f) === TICKET);
+  if (context.deferIndex) return;
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
 }
 
 async function sync(context: ServiceContext): Promise<SyncReport> {
@@ -218,6 +261,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const [found, ids, local] = await Promise.all([search(api, jql, LIST_FIELDS), lookups(api), localItems(context)]);
   const known = new Map(local.map((item) => [item.key, item.data]));
   const inScope = new Set(found.map((issue) => issue.key));
+  boundaries.set(context, boundaryOf(context, inScope));
   const limit = limiter(4);
 
   await Promise.all(
@@ -225,7 +269,9 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
       limit(async () => {
         const existing = known.get(summary.key);
         // Unchanged in Jira and already marked in scope: nothing to fetch.
-        if (existing && existing.updated === summary.fields.updated && existing.inScope === true) return;
+        // A ticket written before attachments were kept, or with one that failed, is done again.
+        const attachmentsDone = context.scope.attachments === false || (typeof existing?.attachments === "number" && existing.attachmentsFailed === undefined);
+        if (existing && existing.updated === summary.fields.updated && existing.inScope === true && existing.viewer === ids.me && attachmentsDone) return;
         try {
           const result = await render(context, api, await fetchIssue(api, summary.key), ids, "scope");
           if (result === "added") report.added++;
@@ -238,9 +284,30 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   );
 
   // Tickets that left the scope stay, marked as outside it. Files are cheap, and history matters.
-  for (const item of local) {
-    if (item.data.inScope === true && !inScope.has(item.key) && (await updateFields(file(context, item.key), { inScope: false, via: "former" }))) report.removed++;
-  }
+  // Open ones are looked up again, so they show as done or moved. Done ones rarely change,
+  // and ones Jira no longer has are marked gone, so neither is asked for on every sync.
+  await Promise.all(
+    local
+      .filter((item) => !inScope.has(item.key) && item.data.gone !== true)
+      .map((item) =>
+        limit(async () => {
+          const former = item.data.inScope === true ? { inScope: false, via: "former" } : {};
+          try {
+            if (item.data.statusCategory === "done" || !(await projectAllowed(context, item.key))) {
+              // Outside the boundary, a ticket that left the scope is marked so; parents, links and pulls keep their copy, unrefreshed.
+              if (item.data.inScope === true && (await updateFields(file(context, item.key), former))) report.removed++;
+              return;
+            }
+            const result = await render(context, api, await fetchIssue(api, item.key), ids, item.data.inScope === true ? "former" : (String(item.data.via ?? "linked") as Via));
+            if (result !== "unchanged") report.updated++;
+          } catch (error) {
+            // Deleted, moved or hidden from this login: the copy stays, and the sync isn't failed by it.
+            if (!(error instanceof NotFound)) report.failed.push({ id: item.key, reason: describeError(error) });
+            else if ((await updateFields(file(context, item.key), { ...former, gone: true })) && item.data.inScope === true) report.removed++;
+          }
+        }),
+      ),
+  );
 
   // Specs often live on the parent, not the ticket you're assigned, so open tickets' parents
   // are kept too, within the scope.
@@ -250,6 +317,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   }
   for (const key of parents) {
     if (existsSync(file(context, key))) continue;
+    if (!(await projectAllowed(context, key))) continue;
     try {
       await render(context, api, await fetchIssue(api, key), ids, "parent");
       report.added++;
@@ -267,7 +335,7 @@ function keysIn(text: string, scope: Scope): string[] {
   const keys = new Set<string>();
   for (const match of text.matchAll(KEY)) {
     // Without known projects, any KEY-123 counts; with them, lookalikes like UTF-8 don't.
-    if (projects.length === 0 || projects.includes(match[1] ?? "")) keys.add(match[0]);
+    if (projects.length === 0 || projects.includes(match[1] ?? "") || linkedProjects(scope).includes(match[1] ?? "")) keys.add(match[0]);
   }
   return [...keys];
 }
@@ -277,14 +345,26 @@ function scopeProjects(scope: Scope): string[] {
   return Array.isArray(scope.projects) ? scope.projects.map(String) : typeof scope.project === "string" ? [scope.project] : [];
 }
 
+/** Projects whose tickets may be fetched when something links to them, beyond the scope's own. */
+function linkedProjects(scope: Scope): string[] {
+  return Array.isArray(scope.linkedProjects) ? scope.linkedProjects.map(String) : [];
+}
+
+/** A project key, from the key itself, a ticket key, or a ticket's link. */
+function projectFrom(word: string): string | null {
+  return word.match(/\/browse\/([A-Z][A-Z0-9]{1,9})-\d+/)?.[1] ?? word.match(/^([A-Z][A-Z0-9]{1,9})(?:-\d+)?$/)?.[1] ?? null;
+}
+
 /** The more specific reason wins: an item in scope stays "scope", a parent stays "parent". */
 const RANK: Record<Via, number> = { scope: 4, parent: 3, pulled: 2, linked: 1, former: 0 };
 
 async function fetchOne(context: ServiceContext, reference: Reference, via: Via = "linked"): Promise<string> {
+  const cached = context.fetched?.get(reference.id);
+  if (cached) return cached;
   await migrate(context, reference.id);
-  const projects = scopeProjects(context.scope);
-  if (context.settings.fetch === "within-scope" && projects.length > 0 && !projects.includes(reference.id.split("-")[0] ?? "")) {
-    throw new OutsideScope(`Jira ticket ${reference.id}`);
+  if (!(await projectAllowed(context, reference.id))) {
+    const projects = await boundary(context);
+    throw new OutsideScope(`Jira ticket ${reference.id}`, projects !== null && projects.length === 0 ? 'The scope names no projects and no synced ticket shows which it covers yet. Run "dev sync jira" first, add "projects" to the Jira scope, or set "fetch: anywhere" in dev.yaml.' : undefined);
   }
   const api = client(context);
   const target = file(context, reference.id);
@@ -296,6 +376,7 @@ async function fetchOne(context: ServiceContext, reference: Reference, via: Via 
   }
   await render(context, api, await fetchIssue(api, reference.id), await lookups(api), reason);
   index(context);
+  context.fetched?.set(reference.id, target);
   return target;
 }
 
@@ -332,19 +413,41 @@ async function chooseScope(context: ServiceContext): Promise<Scope> {
       : filter === "open"
         ? `project = ${project} AND statusCategory != Done ORDER BY updated DESC`
         : await ask("JQL search:", "edit dev.yaml", `project = ${project} AND statusCategory != Done ORDER BY updated DESC`);
-  return { project, jql };
+  return { project, jql, attachments: true };
 }
 
 export const jira: Service = {
   id: "jira",
   title: "Jira",
+  index: INDEX,
   description: "Tickets, one file per ticket",
   role: "connected",
 
   scope: {
-    describe: (scope) => String(scope.jql ?? "no search yet"),
+    describe: (scope) => `${String(scope.jql ?? "no search yet")}${linkedProjects(scope).length > 0 ? `, and tickets linked from there in ${linkedProjects(scope).join(", ")}` : ""}`,
     choose: chooseScope,
+    // The search decides what the work is. Adding a project only lets links into it be fetched.
+    add(scope, items) {
+      const list = linkedProjects(scope);
+      const added: string[] = [];
+      const problems = [];
+      for (const item of items) {
+        const project = projectFrom(item);
+        if (!project) problems.push({ message: `"${item}" isn't a project key, a ticket key or a ticket's link.` });
+        else if (!list.includes(project) && !added.includes(project)) added.push(project);
+      }
+      return { scope: { ...scope, linkedProjects: [...list, ...added] }, added, problems };
+    },
+    remove(scope, items) {
+      const list = linkedProjects(scope);
+      const removed = items.map((item) => projectFrom(item) ?? item).filter((project) => list.includes(project));
+      const next: Scope = { ...scope, linkedProjects: list.filter((project) => !removed.includes(project)) };
+      if ((next.linkedProjects as string[]).length === 0) delete next.linkedProjects;
+      return { scope: next, removed, problems: items.filter((item) => !list.includes(projectFrom(item) ?? item)).map((item) => ({ message: `"${item}" isn't in the scope's linked projects.` })) };
+    },
     validate(scope) {
+      if (scope.attachments !== undefined && typeof scope.attachments !== "boolean") return [{ message: '"attachments" should be true or false.' }];
+      if (scope.linkedProjects !== undefined && (!Array.isArray(scope.linkedProjects) || !scope.linkedProjects.every((p) => /^[A-Z][A-Z0-9]{1,9}$/.test(String(p))))) return [{ message: '"linkedProjects" should be a list of project keys, like [ABC, OPS].' }];
       if (typeof scope.jql !== "string" || !scope.jql.trim()) return [{ message: 'needs a "jql" search, like: assignee = currentUser() AND statusCategory != Done.' }];
       if (scope.project !== undefined && typeof scope.project !== "string") return [{ message: '"project" should be a project key, like ABC.' }];
       return [];
@@ -375,14 +478,18 @@ export const jira: Service = {
 
   links: {
     find(text, context) {
-      const keys = keysIn(text, context.scope).map((id) => ({ service: SERVICE, id }));
+      // Without projects in the scope, a bare key is a guess: UTF-8 and SHA-256 look like keys too.
+      const guess = scopeProjects(context.scope).length === 0;
+      const keys: Reference[] = keysIn(text, context.scope).map((id) => ({ service: SERVICE, id, ...(guess ? { uncertain: true } : {}) }));
       // Browse links count whatever the project, since they can't be lookalikes.
       for (const match of text.matchAll(/https?:\/\/[\w.-]+(?::\d+)?\/browse\/([A-Z][A-Z0-9]{1,9}-\d+)/g)) {
-        if (match[1] && !keys.some((k) => k.id === match[1])) keys.push({ service: SERVICE, id: match[1] });
+        if (match[1] && !keys.some((k) => k.id === match[1])) keys.push({ service: SERVICE, id: match[1], url: match[0] });
+        else { const known = keys.find((k) => k.id === match[1]); if (known) { known.url = match[0]; delete known.uncertain; } }
       }
       return keys;
     },
     fetch: fetchOne,
+    local: async (context, reference) => (existsSync(file(context, reference.id)) ? file(context, reference.id) : null),
   },
 
   contribute: {
@@ -405,7 +512,7 @@ export const jira: Service = {
       const notFetched: string[] = [];
       for (const found of await context.references(text)) {
         if (found.file) files.push(found.file);
-        else if (found.outside) notFetched.push(found.reference.url ?? found.reference.id);
+        else if (found.outside) notFetched.push(describeOutside(found));
       }
 
       return { title: String(data?.title ?? reference.id), type: branchType(String(data?.type ?? "")), files, references: [], notFetched };
@@ -438,8 +545,9 @@ export const jira: Service = {
   commands: [
     {
       name: "pull",
-      description: "Pull specific tickets in full, in scope or not",
+      description: "Pull specific tickets in full, within the configured fetch boundary",
       mark: "read",
+      writes: true,
       arguments: ["<keys...>"],
       async run(context, args) {
         for (const key of args) {
@@ -458,8 +566,9 @@ export const jira: Service = {
         file: "jira.md",
         content: `# Jira in this workspace
 
-Each ticket has its own folder, \`jira/<KEY>/\`. A sync only ever writes \`ticket.md\` there:
-notes, research or images you add next to it are never touched.
+Each ticket has its own folder, \`jira/<KEY>/\`. A sync only ever writes \`ticket.md\` and the
+ticket's own attachments, in \`attachments/\`, there: notes, research or images you add next
+to them are never touched.
 
 ## Finding tickets
 
@@ -487,12 +596,18 @@ The body has the description, the acceptance criteria field, relations, attachme
 comments. Acceptance criteria are often written in the description rather than in their
 own field, and on a sub-task, in the parent's description.
 
+Attachments are files in the ticket's \`attachments/\` folder, and images in the text point
+to them. Links to tickets, pages and issues that are in the workspace point to the local
+files; the original address is kept as the link's title. A link that is still a web address
+has no local copy. If it's outside the scope, the ticket ends with an "Outside the scope"
+section giving the exact command that adds it.
+
 ## Commands
 
 | Command | Does |
 | --- | --- |
 | \`dev task list --mine\` | Your open tickets |
-| \`dev jira pull <KEY>\` | Pull a ticket now, in scope or not |
+| \`dev jira pull <KEY>\` | Pull a ticket now, within the configured fetch boundary |
 | \`dev task start <KEY>\` | Set up work on a ticket, with its parent and linked pages |
 | \`dev jira scope\` | Show the search that defines the scope |
 
@@ -501,3 +616,25 @@ Changing the scope, and anything that changes Jira, is the person's call.`,
     ],
   },
 };
+
+/** The Jira projects fetches may reach: the scope's own, or for a JQL-only scope, those of the tickets it returns. null: anywhere. */
+const boundaries = new WeakMap<ServiceContext, string[] | null>();
+
+function boundaryOf(context: ServiceContext, inScopeKeys: Iterable<string>): string[] | null {
+  if (context.settings.fetch === "anywhere") return null;
+  const projects = scopeProjects(context.scope);
+  return [...new Set([...(projects.length > 0 ? projects : [...inScopeKeys].map((key) => key.split("-")[0] ?? "")), ...linkedProjects(context.scope)])];
+}
+
+async function boundary(context: ServiceContext): Promise<string[] | null> {
+  if (!boundaries.has(context)) {
+    const local = context.settings.fetch === "anywhere" || scopeProjects(context.scope).length > 0 ? [] : await localItems(context);
+    boundaries.set(context, boundaryOf(context, local.filter((item) => item.data.inScope === true).map((item) => item.key)));
+  }
+  return boundaries.get(context) ?? null;
+}
+
+async function projectAllowed(context: ServiceContext, key: string): Promise<boolean> {
+  const projects = await boundary(context);
+  return projects === null || projects.includes(key.split("-")[0] ?? "");
+}

@@ -1,3 +1,4 @@
+import { withRefresh } from "./core/refresh.ts";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
@@ -85,10 +86,11 @@ function addServiceCommands(program: Command, entry: ServiceEntry, registry: Reg
       .argument("[action]", listable ? "add or remove, to change it by link or id" : "Leave out to show or choose it")
       .argument("[items...]", "Links or ids, for add and remove")
       .option("--set <scope>", "The new scope as YAML or JSON, instead of choosing")
+      .option("--choose", "Choose a new scope interactively")
       .addHelpText(
         "after",
         details(`
-Without arguments, shows the scope, or at a terminal lets you choose it again.${
+Without arguments, shows the scope. Use --choose to change it interactively.${
           listable
             ? `
 
@@ -99,7 +101,7 @@ Without arguments, shows the scope, or at a terminal lets you choose it again.${
 
 Changing the scope is the person's call: the command check asks before an agent does it.`),
       )
-      .action(async (action: string | undefined, items: string[], options: { set?: string }) => {
+      .action(async (action: string | undefined, items: string[], options: { set?: string; choose?: boolean }) => {
         const { runScope } = await import("./commands/services.ts");
         await runScope(program, registry, out, entry, { ...options, action, items });
       });
@@ -130,7 +132,9 @@ Changing the scope is the person's call: the command check asks before an agent 
       if (!enabled.includes(entry.key)) {
         throw new DevError(`${entry.service.title} isn't enabled in this workspace.`, `Add it with "dev add ${entry.service.id}".`);
       }
-      await definition.run(workspaceServiceContext(root, entry, config, registry, out), self.args, self.opts());
+      const run = () => definition.run(workspaceServiceContext(root, entry, config, registry, out), self.args, self.opts());
+      const writes = typeof definition.writes === "function" ? definition.writes(self.opts()) : Boolean(definition.writes);
+      await (writes ? withRefresh(root, `dev ${entry.service.id} ${definition.name}`, run) : run());
     });
   }
 }
@@ -291,7 +295,7 @@ pushes.`),
     )
     .action(async (ref: string, options: { title?: string; type?: string; base?: string }) => {
       const { runTaskStart } = await import("./commands/task.ts");
-      await runTaskStart(registry, out, ref, options);
+      await withRefresh(requireWorkspaceRoot(), "dev task start", () => runTaskStart(registry, out, ref, options));
     });
 
   task
@@ -345,6 +349,7 @@ branch. Task notes in tasks/ are never removed.`),
     .description("Sync every enabled service, or one")
     .argument("[service]", "Only this service, like jira")
     .option("--referenced", "For docs services, only update what's here and fetch what tasks point to")
+    .option("--recover", "Release an unreadable lock left by an interrupted sync")
     .addHelpText(
       "after",
       details(`
@@ -357,9 +362,9 @@ within its scope, unless dev.yaml sets "fetch: anywhere" for it.
 
 One service failing never stops the others. Review the changes before committing them.`),
     )
-    .action(async (service: string | undefined, options: { referenced?: boolean }) => {
+    .action(async (service: string | undefined, options: { referenced?: boolean; recover?: boolean }) => {
       const { runSync } = await import("./commands/sync.ts");
-      await runSync(registry, out, service, { referenced: Boolean(options.referenced) });
+      await runSync(registry, out, service, { referenced: Boolean(options.referenced), recover: Boolean(options.recover) });
     });
 
   const day = program.command("day").description("Start and end the working day");

@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { atomicWriteSync, safePath } from "./files.ts";
+import { existsSync, readFileSync } from "node:fs";
 import { isNode, isSeq, parseDocument, stringify, YAMLSeq } from "yaml";
 import type { Problem, Scope } from "../plugins/types.ts";
 import { DevError } from "./output.ts";
@@ -149,7 +149,7 @@ export function parseConfig(text: string): { config: ProjectConfig; problems: Pr
 }
 
 export function configPath(root: string): string {
-  return path.join(root, CONFIG_FILE);
+  return safePath(root, CONFIG_FILE);
 }
 
 /** Loads dev.yaml, failing with every problem listed when it isn't usable. */
@@ -186,7 +186,7 @@ export function saveConfig(root: string, config: ProjectConfig): void {
   if (Object.keys(config.conventions).length > 0) data.conventions = config.conventions;
 
   if (!existsSync(file)) {
-    writeFileSync(file, stringify(data));
+    atomicWriteSync(file, stringify(data));
     return;
   }
 
@@ -215,5 +215,5 @@ export function saveConfig(root: string, config: ProjectConfig): void {
   for (const key of ["versioning", "conventions"]) {
     if (!(key in data)) document.delete(key);
   }
-  writeFileSync(file, document.toString());
+  atomicWriteSync(file, document.toString());
 }

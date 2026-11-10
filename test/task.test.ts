@@ -1,3 +1,4 @@
+import { taskId } from "../src/core/tasks.ts";
 /** Tasks and worktrees, against a local origin repository. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -65,28 +66,28 @@ test("task start creates the worktree, branch and notes, and is safe to re-run",
   const { code, out, err } = dev(root, ["task", "start", "Add dark mode!"]);
   assert.equal(code, 0, err);
 
-  const dir = path.join(root, "worktrees", "add-dark-mode");
-  assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), "feature/add-dark-mode-add-dark-mode");
+  const dir = path.join(root, "worktrees", taskId("Add dark mode!"));
+  assert.equal(git(dir, "rev-parse", "--abbrev-ref", "HEAD"), `feature/${taskId("Add dark mode!")}-add-dark-mode`);
   const upstream = spawnSync("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { cwd: dir });
   assert.notEqual(upstream.status, 0, "the branch has no upstream until it's pushed");
   assert.match(out, /Copied \.env\.local from the clone/);
   assert.match(err, /Didn't copy notes\.txt: git doesn't ignore it/);
   assert.equal(readFileSync(path.join(dir, ".env.local"), "utf8"), "SECRET=1\n");
 
-  const brief = readFileSync(path.join(root, "tasks", "add-dark-mode", "brief.md"), "utf8");
-  assert.match(brief, /^---\nid: "add-dark-mode"\ntitle: "Add dark mode!"/);
+  const brief = readFileSync(path.join(root, "tasks", taskId("Add dark mode!"), "brief.md"), "utf8");
+  assert.ok(brief.startsWith(`---\nid: "${taskId("Add dark mode!")}"\ntitle: "Add dark mode!"`));
   assert.match(brief, /repository\/\.github\/PULL_REQUEST_TEMPLATE\.md/);
-  assert.ok(existsSync(path.join(root, "tasks", "add-dark-mode", "progress.md")));
+  assert.ok(existsSync(path.join(root, "tasks", taskId("Add dark mode!"), "progress.md")));
 
   // The workspace instructions are in the worktree but kept out of git.
   assert.ok(existsSync(path.join(dir, ".github", "instructions", "dev-workspace.instructions.md")));
   assert.equal(git(dir, "status", "--porcelain"), "");
 
-  writeFileSync(path.join(root, "tasks", "add-dark-mode", "brief.md"), "mine\n");
+  writeFileSync(path.join(root, "tasks", taskId("Add dark mode!"), "brief.md"), "mine\n");
   const again = dev(root, ["task", "start", "Add dark mode!"]);
   assert.equal(again.code, 0, again.err);
   assert.match(again.out, /already there and left as it was/);
-  assert.equal(readFileSync(path.join(root, "tasks", "add-dark-mode", "brief.md"), "utf8"), "mine\n");
+  assert.equal(readFileSync(path.join(root, "tasks", taskId("Add dark mode!"), "brief.md"), "utf8"), "mine\n");
 });
 
 test("task start fetches an item a service recognises, and what it links to", () => {
@@ -132,6 +133,37 @@ test("task status and cleanup report what's in flight, and remove only what's sa
   assert.ok(existsSync(path.join(root, "worktrees", "busy")));
   assert.ok(existsSync(path.join(root, "tasks", "idle", "brief.md")), "notes stay");
   assert.equal(spawnSync("git", ["rev-parse", "--verify", "--quiet", "feature/idle-idle"], { cwd: path.join(root, "repository") }).status, 1, "its branch is gone");
+});
+
+test("a task started before ids had a hash is resumed under its old id", () => {
+  const root = workspace();
+  mkdirSync(path.join(root, "tasks", "fix-the-login"), { recursive: true });
+  writeFileSync(path.join(root, "tasks", "fix-the-login", "brief.md"), "mine\n");
+  const started = dev(root, ["task", "start", "Fix the login"]);
+  assert.equal(started.code, 0, started.err);
+  assert.ok(existsSync(path.join(root, "worktrees", "fix-the-login")), "the old id is kept");
+  assert.ok(!existsSync(path.join(root, "tasks", taskId("Fix the login"))), "no second task folder");
+  assert.equal(readFileSync(path.join(root, "tasks", "fix-the-login", "brief.md"), "utf8"), "mine\n");
+});
+
+test("cleanup works offline and around a broken worktree, and never counts either as safe", () => {
+  const root = workspace();
+  dev(root, ["task", "start", "idle"]);
+  mkdirSync(path.join(root, "worktrees", "broken"), { recursive: true });
+  writeFileSync(path.join(root, "worktrees", "broken", ".git"), "gitdir: /nonexistent/worktree\n");
+  git(path.join(root, "repository"), "remote", "set-url", "origin", path.join(root, "no-such-origin"));
+
+  const status = dev(root, ["task", "status"]);
+  assert.equal(status.code, 0, status.err);
+  assert.match(status.out, /idle {2}feature\/idle-idle/);
+  assert.match(status.err, /broken {2}can't be read/);
+
+  const removed = dev(root, ["task", "cleanup", "--remove"]);
+  assert.equal(removed.code, 0, removed.err);
+  assert.match(removed.err, /Couldn't reach origin/);
+  assert.match(removed.err, /Keep broken: git can't read it/);
+  assert.ok(!existsSync(path.join(root, "worktrees", "idle")), "a worktree with nothing in it goes, even offline");
+  assert.ok(existsSync(path.join(root, "worktrees", "broken")));
 });
 
 test("task commands need a clone", () => {

@@ -1,8 +1,8 @@
-import path from "node:path";
+import { safePath } from "./files.ts";
 import type { Output, PluginContext, Scope, ServiceContext, ServiceEntry } from "../plugins/types.ts";
 import type { Registry } from "../plugins/registry.ts";
 import { loadCredentials } from "./credentials.ts";
-import { resolveReferences } from "./links.ts";
+import { createLocalizer, resolveReferences } from "./links.ts";
 import { DevError } from "./output.ts";
 import type { ProjectConfig } from "./project-config.ts";
 
@@ -23,11 +23,20 @@ export function serviceContext(
 ): ServiceContext {
   const plugin = entry.plugin.name;
   const configured = workspace?.config.services.find((s) => s.service === entry.key);
+  const tools = workspace && {
+    root,
+    config: workspace.config,
+    registry: workspace.registry,
+    out,
+    contextFor: (other: ServiceEntry) => serviceContext(root, other, workspace.config.services.find((s) => s.service === other.key)?.scope ?? {}, out, workspace),
+  };
+  let localizer: ReturnType<typeof createLocalizer> | undefined;
   return {
     ...pluginContext(root, out),
     root,
+    fetched: new Map(),
     settings: { fetch: configured?.fetch ?? "within-scope", sync: configured?.sync ?? "full" },
-    folder: entry.service.role === "connected" ? path.join(root, entry.service.id) : null,
+    folder: entry.service.role === "connected" ? safePath(root, entry.service.id) : null,
     scope,
     credentials() {
       const saved = loadCredentials(plugin);
@@ -40,19 +49,12 @@ export function serviceContext(
       return saved.credentials;
     },
     async references(text) {
-      if (!workspace) return [];
-      const { config, registry } = workspace;
-      return resolveReferences(
-        {
-          root,
-          config,
-          registry,
-          out,
-          contextFor: (other) => serviceContext(root, other, config.services.find((s) => s.service === other.key)?.scope ?? {}, out, workspace),
-        },
-        text,
-        entry.key,
-      );
+      return tools ? resolveReferences(tools, text, entry.key) : [];
+    },
+    async localize(body, file) {
+      if (!tools) return body;
+      localizer ??= createLocalizer(tools);
+      return localizer(body, file);
     },
   };
 }

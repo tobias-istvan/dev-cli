@@ -1,20 +1,21 @@
+import { atomicWrite } from "../../core/files.ts";
 import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Plugin, Reference, Service, ServiceContext, SyncReport } from "../types.ts";
 import { renderItem, splitFrontMatter, type CommonFields, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { secret } from "../../core/prompt.ts";
-import { mcpAvailable, mcpNode, mcpUrl, restNodes, whoAmI } from "./remote.ts";
+import { mcpAvailable, mcpUrl, restNodes, whoAmI } from "./remote.ts";
 
 /**
  * Figma: designs that tickets, issues and PRs link to. Each becomes a small item,
  * figma/<fileKey>-<nodeId>/design.md, saying which frame it is and how to read it through
  * the local Figma MCP. Agents read the design itself there, never from the web URL.
  *
- * A sync fingerprints each frame's content, with a personal access token if there is one,
- * or else through the Figma desktop app's local MCP server, and records when it changed.
+ * A sync fingerprints each frame through the REST API with a token. Desktop metadata
+ * remains unverified because the MCP server cannot establish file identity.
  */
 
 const SERVICE = "figma:figma";
@@ -86,7 +87,7 @@ function body(data: Record<string, unknown>): string {
 }
 
 async function save(target: string, data: CommonFields & Record<string, unknown>): Promise<void> {
-  await writeFile(target, renderItem(data, body(data)));
+  await atomicWrite(target, renderItem(data, body(data)));
 }
 
 async function localItems(context: ServiceContext): Promise<Array<{ file: string; data: Record<string, unknown> }>> {
@@ -101,8 +102,11 @@ async function localItems(context: ServiceContext): Promise<Array<{ file: string
   return items;
 }
 
+const INDEX: NonNullable<Service["index"]> = { folder: "figma", title: "Figma designs", include: (f) => path.posix.basename(f) === DESIGN };
+
 function index(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "Figma designs", (f) => path.posix.basename(f) === DESIGN);
+  if (context.deferIndex) return;
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
 }
 
 function scopeFiles(context: ServiceContext): string[] {
@@ -138,13 +142,12 @@ async function record(context: ServiceContext, reference: Reference, via: Via): 
 }
 
 /**
- * Fingerprints every recorded design and notes which changed. With a token, through Figma's
- * REST API; otherwise through the local MCP, for the file open in Figma desktop, and only
- * when the frame's name matches, since that server can't say which file is open.
+ * Fingerprints recorded designs with the REST API. Desktop metadata is only an unverified
+ * availability check and cannot update authoritative change-detection state.
  */
 async function check(context: ServiceContext): Promise<SyncReport> {
   const report: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
-  const items = await localItems(context);
+  const items = (await localItems(context)).filter((item) => context.settings.fetch === "anywhere" || scopeFiles(context).length === 0 || scopeFiles(context).includes(String(item.data.fileKey)));
   if (items.length === 0) return report;
 
   const now = new Date().toISOString();
@@ -193,21 +196,9 @@ async function check(context: ServiceContext): Promise<SyncReport> {
       }
     }
   } else if (await mcpAvailable()) {
-    for (const item of items) {
-      const nodeId = String(item.data.nodeId ?? "");
-      if (!nodeId) continue;
-      try {
-        const state = await mcpNode(nodeId);
-        // A node with that id in a different file would have another name: don't trust it.
-        if (!state || (typeof item.data.nodeName === "string" && item.data.nodeName && state.nodeName !== item.data.nodeName)) {
-          unchecked.push(item.data);
-          continue;
-        }
-        await apply(item, state, "mcp");
-      } catch {
-        unchecked.push(item.data);
-      }
-    }
+    // Desktop metadata does not prove which file is open, so it's never asked for a frame:
+    // the answer couldn't overwrite verified state.
+    unchecked.push(...items.filter((item) => item.data.nodeId).map((item) => item.data));
     if (unchecked.length > 0) {
       // Grouped by file, with a link to open it, since one open file checks all its frames.
       const byFile = new Map<string, Array<Record<string, unknown>>>();
@@ -235,6 +226,7 @@ async function check(context: ServiceContext): Promise<SyncReport> {
 export const figmaService: Service = {
   id: "figma",
   title: "Figma",
+  index: INDEX,
   description: "Designs that tickets and PRs link to, read through the local Figma MCP",
   role: "connected",
 
@@ -273,6 +265,10 @@ export const figmaService: Service = {
       return [...found.values()];
     },
     fetch: (context, reference) => record(context, reference, "linked"),
+    async local(context, reference) {
+      const link = parseLink(reference.url ?? "");
+      return link && existsSync(file(context, link)) ? file(context, link) : null;
+    },
   },
 
   contribute: {
@@ -295,8 +291,10 @@ export const figmaService: Service = {
       name: "check",
       description: "Check the recorded designs for changes now",
       mark: "read",
+      writes: true,
       async run(context) {
         const report = await check(context);
+        if (report.failed.length > 0) process.exitCode = 1;
         context.out.info(`Done: ${report.updated} design${report.updated === 1 ? "" : "s"} changed.`);
         for (const failure of report.failed) context.out.warn(`  ${failure.id}: ${failure.reason}`);
       },
@@ -305,6 +303,7 @@ export const figmaService: Service = {
       name: "pull",
       description: "Record a design from its Figma link",
       mark: "read",
+      writes: true,
       arguments: ["<link>"],
       async run(context, args) {
         const target = await record(context, { service: SERVICE, id: args[0] ?? "", url: args[0] }, "pulled");

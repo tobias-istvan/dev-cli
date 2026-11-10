@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { atomicWriteSync } from "./files.ts";
 import path from "node:path";
 import type { Credentials } from "../plugins/types.ts";
 import { DevError } from "./output.ts";
@@ -48,11 +49,14 @@ function read(plugin: string): CredentialFile {
   if (!existsSync(file)) return { accounts: {} };
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<CredentialFile>;
-    return { default: parsed.default, accounts: parsed.accounts ?? {} };
+    if (!parsed || !parsed.accounts || typeof parsed.accounts !== "object" || Array.isArray(parsed.accounts) ||
+      (parsed.default !== undefined && typeof parsed.default !== "string") ||
+      !Object.values(parsed.accounts).every((values) => values && typeof values === "object" && !Array.isArray(values) && Object.values(values).every((v) => typeof v === "string"))) throw new Error("Invalid credential store");
+    return { default: parsed.default, accounts: parsed.accounts };
   } catch {
     throw new DevError(
       `The saved login for ${plugin} can't be read.`,
-      `Log in again with "dev login ${plugin}".`,
+      `Remove the unreadable store with "dev logout ${plugin}", then run "dev login ${plugin}".`,
     );
   }
 }
@@ -64,10 +68,7 @@ function write(plugin: string, data: CredentialFile): void {
 
   // Write beside it, then rename, so a crash never leaves half a file.
   const file = fileFor(plugin);
-  const temporary = `${file}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, file);
+  atomicWriteSync(file, `${JSON.stringify(data, null, 2)}\n`, 0o600);
 }
 
 function fromEnvironment(plugin: string): Credentials {
@@ -99,7 +100,6 @@ export function saveCredentials(plugin: string, account: string, credentials: Cr
 
 /** Removes one account, or all of them. Returns whether anything was removed. */
 export function removeCredentials(plugin: string, account?: string): boolean {
-  const data = read(plugin);
   if (!account) {
     const file = fileFor(plugin);
     const existed = existsSync(file);
@@ -107,6 +107,7 @@ export function removeCredentials(plugin: string, account?: string): boolean {
     return existed;
   }
 
+  const data = read(plugin);
   if (!(account in data.accounts)) return false;
   delete data.accounts[account];
   if (data.default === account) data.default = Object.keys(data.accounts)[0];
@@ -118,4 +119,9 @@ export function removeCredentials(plugin: string, account?: string): boolean {
 export function listAccounts(plugin: string): { default: string | null; accounts: string[] } {
   const data = read(plugin);
   return { default: data.default ?? null, accounts: Object.keys(data.accounts) };
+}
+
+/** All stored accounts and environment values, for export redaction only. */
+export function credentialSets(plugin: string): Credentials[] {
+  return [...Object.values(read(plugin).accounts), fromEnvironment(plugin)];
 }

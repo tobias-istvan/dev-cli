@@ -17,10 +17,10 @@ let base: string;
 let origin: string;
 let server: Server;
 let site: string;
-const state = { searchKeys: ["ABC-1", "ABC-2"], failChild: false, updated: "2026-11-07T09:00:00.000+0000", version: 3, childText: "Child text" };
+const state = { searchKeys: ["ABC-1", "ABC-2"], failChild: false, updated: "2026-11-07T09:00:00.000+0000", version: 3, childText: "Child text", crossParent: false };
 
 function issue(key: string) {
-  const parent = key === "ABC-1" ? { parent: { key: "ABC-9", fields: { summary: "The epic", issuetype: { name: "Story" } } } } : {};
+  const parent = key === "ABC-1" ? { parent: { key: "ABC-9", fields: { summary: "The epic", issuetype: { name: "Story" } } } } : key === "ABC-2" && state.crossParent ? { parent: { key: "XYZ-8", fields: { summary: "Their epic", issuetype: { name: "Story" } } } } : {};
   return {
     key,
     fields: {
@@ -32,13 +32,14 @@ function issue(key: string) {
       duedate: key === "ABC-1" ? "2026-01-01" : null,
       customfield_2: 5,
       comment: { comments: [{ id: "c1", author: { displayName: "Kim" }, created: "2026-11-06T10:00:00.000+0000" }] },
+      ...(key === "ABC-1" ? { attachment: [{ id: "55", filename: "diagram.png", size: 2048, content: `${site}/rest/api/3/attachment/content/55` }] } : {}),
       ...parent,
     },
     renderedFields: {
       description:
         key === "ABC-2"
           ? `<p>See <a href="${site}/wiki/spaces/OT/pages/300/Other">another team's page</a>, <a href="${site}/wiki/spaces/SP/pages/101/Child">the child page</a> and <a href="${site}/browse/XYZ-7">their ticket</a>.</p>`
-          : `<p>Build it. Spec: <a href="${site}/wiki/spaces/SP/pages/100/Spec">spec</a>. Uses UTF-8.</p>`,
+          : `<p>Build it. Spec: <a href="${site}/wiki/spaces/SP/pages/100/Spec">spec</a>. Uses UTF-8.</p>${key === "ABC-1" ? '<p><img src="/rest/api/3/attachment/thumbnail/55"></p>' : ""}`,
       customfield_1: "<ul><li>It works</li></ul>",
       comment: { comments: [{ id: "c1", body: "<p>Looks <strong>fine</strong></p>" }] },
     },
@@ -79,8 +80,11 @@ before(async () => {
       const keys = second ? state.searchKeys.slice(1) : state.searchKeys.slice(0, 1);
       return json(200, { issues: keys.map((key) => ({ key, fields: { summary: "", updated: state.updated } })), ...(second || state.searchKeys.length < 2 ? {} : { nextPageToken: "p2" }) });
     }
+    // Jira sends downloads on to its media store.
+    if (p === "/rest/api/3/attachment/content/55") return response.writeHead(303, { location: "/media/55" }).end();
+    if (p === "/media/55") return response.writeHead(200).end("png-bytes");
     const issueMatch = p.match(/^\/rest\/api\/3\/issue\/([A-Z]+-\d+)$/);
-    if (issueMatch?.[1]) return ["ABC-1", "ABC-2", "ABC-9"].includes(issueMatch[1]) ? json(200, issue(issueMatch[1])) : json(404, { errorMessages: ["Issue does not exist"] });
+    if (issueMatch?.[1]) return ["ABC-1", "ABC-2", "ABC-3", "ABC-9", "XYZ-8"].includes(issueMatch[1]) ? json(200, issue(issueMatch[1])) : json(404, { errorMessages: ["Issue does not exist"] });
 
     if (p === "/wiki/api/v2/spaces/S1") return json(200, { id: "S1", key: "SP" });
     if (p === "/wiki/api/v2/spaces/S2") return json(200, { id: "S2", key: "OT" });
@@ -98,7 +102,7 @@ before(async () => {
     if (pageMatch?.[1] && ["100", "101"].includes(pageMatch[1])) return json(200, page(pageMatch[1]));
     return json(404, {});
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   site = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   // A code repository, for task start.
@@ -178,13 +182,63 @@ test("jira sync writes one file per ticket, leaves unchanged ones alone, and mar
   state.searchKeys = ["ABC-1"];
   try {
     const shrunk = await dev(root, ["sync", "jira"]);
-    assert.match(shrunk.out, /Jira: 0 new, 0 updated, 1 removed\./);
+    assert.match(shrunk.out, /Jira: 0 new, 1 updated, 0 removed\./);
     assert.match(readFileSync(path.join(root, "jira", "ABC-2", "ticket.md"), "utf8"), /inScope: false/, "it stays, marked as outside the scope");
     assert.ok(existsSync(path.join(root, "jira", "ABC-9", "ticket.md")), "a ticket pulled on demand stays");
   } finally {
     state.searchKeys = ["ABC-1", "ABC-2"];
   }
   assert.match((await dev(root, ["jira", "pull", "nope"])).err, /isn't a ticket key/);
+});
+
+test("the reference sweep rebuilds each index the same way the service's own sync does", async () => {
+  const root = await workspace();
+  assert.equal((await dev(root, ["sync", "jira"])).code, 0);
+  mkdirSync(path.join(root, "jira", "ABC-1"), { recursive: true });
+  writeFileSync(path.join(root, "jira", "ABC-1", "notes.md"), "---\nid: NOTE-1\ntitle: My notes\n---\n");
+  assert.equal((await dev(root, ["sync", "jira"])).code, 0);
+  const own = readFileSync(path.join(root, "jira", "index.md"), "utf8");
+  assert.match(own, /^# Jira tickets\n/);
+  assert.doesNotMatch(own, /NOTE-1/, "only ticket.md files are rows");
+
+  const all = await dev(root, ["sync"]);
+  assert.equal(all.code, 0, all.err);
+  assert.equal(readFileSync(path.join(root, "jira", "index.md"), "utf8"), own, "a full sync's sweep writes the same index");
+  assert.equal((await dev(root, ["index", "jira"])).code, 0);
+  assert.equal(readFileSync(path.join(root, "jira", "index.md"), "utf8"), own, "dev index writes the same index");
+});
+
+test("a JQL-only scope reaches the projects its tickets are in, and keeps parents, links and pulls as they are", async () => {
+  const root = await workspace(false);
+  assert.equal((await dev(root, ["add", "jira", "--scope", "{ jql: assignee = currentUser() }"])).code, 0);
+  const early = await dev(root, ["jira", "pull", "ABC-9"]);
+  assert.notEqual(early.code, 0);
+  assert.match(early.err, /dev sync jira" first/, "before any sync, the boundary is unknown and says how to fix that");
+
+  state.crossParent = true;
+  try {
+    const first = await dev(root, ["sync", "jira"]);
+    assert.equal(first.code, 0, first.err);
+    assert.match(readFileSync(path.join(root, "jira", "ABC-9", "ticket.md"), "utf8"), /via: parent/, "a same-project parent is kept");
+    assert.ok(!existsSync(path.join(root, "jira", "XYZ-8")), "a parent in another project isn't fetched");
+
+    assert.equal((await dev(root, ["jira", "pull", "ABC-9"])).code, 0);
+    assert.match((await dev(root, ["jira", "pull", "XYZ-8"])).err, /outside this workspace's scope/);
+    // Links between tickets come from other services' items; one fetched earlier looks like this.
+    assert.equal((await dev(root, ["jira", "pull", "ABC-3"])).code, 0);
+    const linked = path.join(root, "jira", "ABC-3", "ticket.md");
+    writeFileSync(linked, readFileSync(linked, "utf8").replace("via: pulled", "via: linked"));
+
+    for (let run = 0; run < 2; run++) {
+      const again = await dev(root, ["sync", "jira"]);
+      assert.equal(again.code, 0, again.err);
+      assert.match(again.out, /0 removed/);
+      assert.match(readFileSync(path.join(root, "jira", "ABC-3", "ticket.md"), "utf8"), /inScope: false[\s\S]*via: linked|via: linked[\s\S]*inScope: false/, "a linked ticket stays linked");
+      assert.doesNotMatch(readFileSync(path.join(root, "jira", "ABC-9", "ticket.md"), "utf8"), /via: former/);
+    }
+  } finally {
+    state.crossParent = false;
+  }
 });
 
 test("confluence sync mirrors the page tree with working links, and keeps the old copy when a page fails", async () => {
@@ -318,7 +372,28 @@ test("--referenced keeps docs that tasks point to up to date, without pulling wh
   assert.match(first.out, /Jira: 3 new/, "task sources still sync in full");
   assert.match(first.out, /Confluence \(referenced only\): 0 new, 0 updated/);
   assert.match(first.out, /Confluence: 2 new from references\./);
-  assert.match(first.out, /Confluence: 1 linked item is outside the scope, so not fetched:\n {2}http:\/\/[^\n]*\/wiki\/spaces\/OT\/pages\/300\/Other\n {4}linked from ABC-2\n {2}To include one: dev confluence scope add <link>\./);
+  assert.match(first.out, /Confluence: 1 linked item is outside the scope, so not fetched:\n {2}http:\/\/[^\n]*\/wiki\/spaces\/OT\/pages\/300\/Other\n {4}linked from ABC-2\n {4}to fetch it: dev confluence scope add http:\/\/[^\n]*\/wiki\/spaces\/OT\/pages\/300\/Other\n {2}Then run "dev sync confluence"\./);
+  assert.match(first.out, /to fetch it: dev jira scope add http:\/\/[^\n]*\/browse\/XYZ-7/);
+  assert.doesNotMatch(first.out, /UTF-8/, "a lookalike key is never reported as outside the scope");
+
+  // Links to what's in the workspace are local, with the address kept; the rest say how to fetch them.
+  const linking = readFileSync(path.join(root, "jira", "ABC-2", "ticket.md"), "utf8");
+  assert.match(linking, /\[the child page\]\(\.\.\/\.\.\/confluence\/SP\/Child-101\/index\.md "http:\/\/[^"]*\/wiki\/spaces\/SP\/pages\/101\/Child"\)/);
+  assert.match(linking, /\[another team's page\]\(http:\/\/[^)]*\/pages\/300\/Other\)/);
+  assert.match(linking, /## Outside the scope[^]*- `dev confluence scope add http:\/\/[^`]*\/pages\/300\/Other`\n- `dev jira scope add http:\/\/[^`]*\/browse\/XYZ-7`/);
+  assert.match(readFileSync(path.join(root, "jira", "ABC-1", "ticket.md"), "utf8"), /\[ABC-9\]\(\.\.\/ABC-9\/ticket\.md "http:\/\/[^"]*\/browse\/ABC-9"\)/);
+
+  // Attachments sit next to the ticket, and the text points at them.
+  const withImage = readFileSync(path.join(root, "jira", "ABC-1", "ticket.md"), "utf8");
+  const image = withImage.match(/!\[\]\((attachments\/diagram-[0-9a-f]{12}\.png)\)/)?.[1];
+  assert.ok(image, withImage);
+  assert.equal(readFileSync(path.join(root, "jira", "ABC-1", image), "utf8"), "png-bytes");
+  assert.match(withImage, /## Attachments\n\n- \[diagram\.png\]\(attachments\/diagram-[0-9a-f]{12}\.png\) \(2 KB\)/);
+  assert.match(withImage, /attachments: 1/);
+
+  const again = await dev(root, ["sync", "--referenced"]);
+  assert.match(again.out, /Jira: 0 new, 0 updated/, "local links are stable from one sync to the next");
+  assert.equal(readFileSync(path.join(root, "jira", "ABC-2", "ticket.md"), "utf8"), linking);
   assert.ok(existsSync(path.join(root, "confluence", "SP", "Spec-100", "index.md")), "the spec ABC-1 points to");
   assert.ok(existsSync(path.join(root, "confluence", "SP", "Child-101", "index.md")), "the page ABC-2 points to");
   assert.ok(!existsSync(path.join(root, "confluence", "SP", "Spec-100", "Child-101")), "no whole tree");
@@ -384,7 +459,7 @@ test("scope add and remove change a Confluence scope by link or id", async () =>
   assert.match((await dev(root, ["confluence", "scope", "add", "300"])).out, /Nothing changed/);
   assert.match((await dev(root, ["confluence", "scope", "remove", "300", "1244365872"])).out, /Done: removed 300, 1244365872/);
   assert.match((await dev(root, ["confluence", "scope", "rename"])).err, /isn't something scope can do/);
-  assert.match((await dev(root, ["jira", "scope", "add", "ABC"])).err, /can't be changed item by item/);
+  assert.match((await dev(root, ["jira", "scope", "add", `${site}/browse/XYZ-7`])).out, /Done: added XYZ\. Jira now syncs .*, and tickets linked from there in XYZ/);
 });
 
 test("indexes say which items are yours and why each is here, and task list answers what's yours", async () => {

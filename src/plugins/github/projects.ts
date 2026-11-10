@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import type { Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matter.ts";
@@ -98,10 +98,11 @@ async function boardItems(api: GitHubApi, owner: string, number: number): Promis
     title = board.title;
     url = board.url;
     items.push(...board.items.nodes);
-    if (!board.items.pageInfo.hasNextPage) break;
+    if (!board.items.pageInfo.hasNextPage) return { title, url, items };
+    if (!board.items.pageInfo.endCursor || board.items.pageInfo.endCursor === after) throw new DevError("GitHub Projects returned a repeated cursor.");
     after = board.items.pageInfo.endCursor;
   }
-  return { title, url, items };
+  throw new DevError("GitHub project exceeds the 5,000-item limit; narrow the scope.");
 }
 
 function boards(context: ServiceContext): Array<{ owner: string; number: number }> {
@@ -115,11 +116,13 @@ function folder(context: ServiceContext): string {
   return context.folder ?? path.join(context.root, "github-projects");
 }
 
+const repoDir = (repo: string, number: number) => `${repo.split("/").map((part) => encodeURIComponent(part).replace(/-/g, "%2D")).join("-")}-${number}`;
+
 /** A stable name for an item: its issue or PR, or a short hash of a draft's id. */
 function itemKey(item: Item): { id: string; dir: string } {
   const content = item.content;
   if (content?.repository && content.number) {
-    return { id: `${content.repository.nameWithOwner}#${content.number}`, dir: `${content.repository.nameWithOwner.replace("/", "-")}-${content.number}` };
+    return { id: `${content.repository.nameWithOwner}#${content.number}`, dir: repoDir(content.repository.nameWithOwner, content.number) };
   }
   const short = createHash("sha256").update(item.id).digest("hex").slice(0, 10);
   return { id: `draft-${short}`, dir: `draft-${short}` };
@@ -142,9 +145,24 @@ async function localItems(context: ServiceContext): Promise<Array<{ path: string
   const items: Array<{ path: string; data: Record<string, unknown> }> = [];
   for (const relative of (await readdir(base, { recursive: true, encoding: "utf8" })).filter((f) => path.basename(f) === ITEM)) {
     const { data } = splitFrontMatter(await readFile(path.join(base, relative), "utf8"));
-    if (data) items.push({ path: relative.split(path.sep).join("/"), data });
+    if (data) items.push({ path: await migrateDir(base, relative.split(path.sep).join("/"), data), data });
   }
   return items;
+}
+
+/**
+ * Folders used to be named with plain hyphens, so owner/a-b#1 and owner-a/b#1 collided. An
+ * item still in its old folder moves to its new one, notes and all, so nothing is duplicated.
+ * Returns where the item is now.
+ */
+async function migrateDir(base: string, relative: string, data: Record<string, unknown>): Promise<string> {
+  const [board, dir, ...rest] = relative.split("/");
+  const match = String(data.id).match(/^([\w.-]+\/[\w.-]+)#(\d+)$/);
+  if (!board || !dir || rest.length !== 1 || !match?.[1]) return relative;
+  const current = repoDir(match[1], Number(match[2]));
+  if (dir === current || dir !== `${match[1].replace("/", "-")}-${match[2]}` || existsSync(path.join(base, board, current))) return relative;
+  await rename(path.join(base, board, dir), path.join(base, board, current));
+  return `${board}/${current}/${ITEM}`;
 }
 
 async function sync(context: ServiceContext): Promise<SyncReport> {
@@ -154,6 +172,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const mineOnly = context.scope.assigned !== "any";
   const local = await localItems(context);
   const kept = new Set<string>();
+  const failedBoards = new Set<string>();
 
   for (const { owner, number } of boards(context)) {
     const boardDir = `${owner}-${number}`;
@@ -161,6 +180,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
     try {
       board = await boardItems(api, owner, number);
     } catch (error) {
+      failedBoards.add(`${owner}/${number}`);
       report.failed.push({ id: `${owner}/${number}`, reason: describeError(error) });
       continue;
     }
@@ -177,8 +197,9 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
       kept.add(relative);
       const due = Object.entries(fields).find(([name]) => /due|deadline|target date|end date/i.test(name))?.[1] ?? "";
       try {
+        const target = path.join(folder(context), boardDir, dir, ITEM);
         const result = await writeItem(
-          path.join(folder(context), boardDir, dir, ITEM),
+          target,
           {
             id,
             title: content.title,
@@ -197,7 +218,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
             inScope: true,
             via: "scope",
           },
-          [
+          await context.localize([
             `# ${content.title}`,
             "",
             `On the board [${board.title}](${board.url})${Object.keys(fields).length > 0 ? `: ${Object.entries(fields).map(([k, v]) => `**${k}:** ${v}`).join(" · ")}` : "."}`,
@@ -207,7 +228,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
             "## Description",
             "",
             (content.body ?? "").trim() || "_No description._",
-          ].join("\n"),
+          ].join("\n"), target),
         );
         if (result === "added") report.added++;
         else if (result === "updated") report.updated++;
@@ -219,9 +240,9 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
 
   // Items that left the boards, or were reassigned, stay, marked.
   for (const item of local) {
-    if (item.data.inScope === true && !kept.has(item.path) && (await updateFields(path.join(folder(context), item.path), { inScope: false, via: "former" }))) report.removed++;
+    if (item.data.inScope === true && !failedBoards.has(String(item.data.board)) && !kept.has(item.path) && (await updateFields(path.join(folder(context), item.path), { inScope: false, via: "former" }))) report.removed++;
   }
-  if (existsSync(folder(context))) buildIndex(folder(context), "GitHub project items", (f) => path.posix.basename(f) === ITEM);
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
   return report;
 }
 
@@ -231,9 +252,43 @@ function boardFrom(text: string): string | null {
   return /^[\w.-]+\/\d+$/.test(text) ? text : null;
 }
 
+const INDEX: NonNullable<Service["index"]> = { folder: "github-projects", title: "GitHub project items", include: (f) => path.posix.basename(f) === ITEM };
+
+type Page<T> = { nodes: T[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
+type BoardSummary = { number: number; title: string; closed: boolean };
+
+/** Every open board the login can see, its own and its organizations', following every page. */
+async function allBoards(api: GitHubApi): Promise<Array<{ owner: string; number: number; title: string }>> {
+  const boards: Array<{ owner: string; number: number; title: string }> = [];
+  const owners: Array<{ login: string; kind: "user" | "organization" }> = [];
+  for (let after: string | null = null, more = true; more; ) {
+    const data: { viewer: { login: string; organizations: Page<{ login: string }> } } = await api.graphql(
+      "query($after: String) { viewer { login organizations(first: 100, after: $after) { nodes { login } pageInfo { hasNextPage endCursor } } } }",
+      { after },
+    );
+    if (owners.length === 0) owners.push({ login: data.viewer.login, kind: "user" });
+    owners.push(...data.viewer.organizations.nodes.map((o) => ({ login: o.login, kind: "organization" as const })));
+    ({ hasNextPage: more, endCursor: after } = data.viewer.organizations.pageInfo);
+  }
+  for (const owner of owners) {
+    for (let after: string | null = null, more = true; more; ) {
+      const data: Record<string, { projectsV2: Page<BoardSummary> } | null> = await api.graphql(
+        `query($login: String!, $after: String) { owner: ${owner.kind}(login: $login) { projectsV2(first: 100, after: $after) { nodes { number title closed } pageInfo { hasNextPage endCursor } } } }`,
+        { login: owner.login, after },
+      );
+      const page = data.owner?.projectsV2;
+      if (!page) break;
+      boards.push(...page.nodes.filter((b) => !b.closed).map((b) => ({ owner: owner.login, number: b.number, title: b.title })));
+      ({ hasNextPage: more, endCursor: after } = page.pageInfo);
+    }
+  }
+  return boards;
+}
+
 export const projects: Service = {
   id: "github-projects",
   title: "GitHub Projects",
+  index: INDEX,
   description: "Project boards: their items and fields",
   role: "connected",
 
@@ -244,18 +299,10 @@ export const projects: Service = {
     },
     async choose(context) {
       const api = GitHubApi.from(context.credentials());
-      const data = await api.graphql<{
-        viewer: { login: string; projectsV2: { nodes: Array<{ number: number; title: string }> }; organizations: { nodes: Array<{ login: string; projectsV2: { nodes: Array<{ number: number; title: string }> } }> } };
-      }>(
-        `query { viewer { login projectsV2(first: 50) { nodes { number title } } organizations(first: 30) { nodes { login projectsV2(first: 50) { nodes { number title } } } } } }`,
-        {},
-      );
-      const options = [
-        ...data.viewer.projectsV2.nodes.map((p) => ({ value: `${data.viewer.login}/${p.number}`, name: `${p.title} (${data.viewer.login}/${p.number})` })),
-        ...data.viewer.organizations.nodes.flatMap((org) => org.projectsV2.nodes.map((p) => ({ value: `${org.login}/${p.number}`, name: `${p.title} (${org.login}/${p.number})` }))),
-      ];
+      const boards = await allBoards(api);
+      const options = boards.map((b) => ({ value: `${b.owner}/${b.number}`, name: b.title, description: `${b.owner}/${b.number}` }));
       if (options.length === 0) throw new DevError("The GitHub login can't see any project boards.", "Add one later with: dev github-projects scope add <board link>");
-      const picked = await chooseMany("Which boards? Space to select, Enter when done.", options, "edit dev.yaml");
+      const picked = await chooseMany("Which boards? Type to filter, Tab to pick, Enter when done.", options, "edit dev.yaml");
       const assigned = await choose("Which items should dev keep?", [{ value: "me", name: "Items assigned to me" }, { value: "any", name: "Every item" }], "edit dev.yaml");
       return { projects: picked, assigned };
     },
@@ -312,7 +359,7 @@ export const projects: Service = {
         "",
         ...open
           .sort((a, b) => Number(b.data.mine === true) - Number(a.data.mine === true))
-          .map((i) => `- [${String(i.data.title)}](github-projects/${i.path}) [${String(i.data.status)}] on ${String(i.data.board)}${i.data.mine === true ? " · mine" : ""}`),
+          .map((i) => `- [${String(i.data.title)}](${encodeURI(`github-projects/${i.path}`)}) [${String(i.data.status)}] on ${String(i.data.board)}${i.data.mine === true ? " · mine" : ""}`),
       ].join("\n");
     },
   },

@@ -66,7 +66,7 @@ before(async () => {
     if (pathname === "/repos/acme/web/pulls/1/comments") return json(200, [{ user: { login: "kim" }, body: "Rename this.", created_at: "2026-11-01T09:00:00Z", path: "src/login.ts", line: 4 }]);
     return json(404, { message: "Not Found" });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
@@ -155,6 +155,9 @@ test("a PR moves from unreviewed to current to updated", async () => {
     assert.match((await dev(root, ["github", "prs"])).out, /#1 \[updated\]/);
     assert.match(readFileSync(path.join(root, "pull-requests", "1", "pr-description.md"), "utf8"), /updated: 2026-11-02T10:00:00Z/);
     assert.equal(readFileSync(path.join(root, "pull-requests", "1", "review.md"), "utf8"), "# PR #1: Fix the login button\n", "the review is never touched");
+    assert.match((await dev(root, ["github", "prs"])).out, /#1 \[unreviewed\]/);
+    await dev(root, ["day", "start", "--no-sync"]);
+    assert.match(readFileSync(path.join(root, "snapshot.md"), "utf8"), /#1/);
   } finally {
     firstUpdated = "2026-11-01T10:00:00Z";
   }

@@ -241,5 +241,5 @@ export function renderSession(
     "injected system reminders are omitted. Secrets are redacted, but read before sharing.",
   ].join("\n");
 
-  return { markdown: `${frontmatter}\n\n${header}\n${body.join("\n")}\n`, meta };
+  return { markdown: redact(`${frontmatter}\n\n${header}\n${body.join("\n")}\n`), meta };
 }
