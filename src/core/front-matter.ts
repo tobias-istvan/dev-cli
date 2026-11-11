@@ -1,5 +1,6 @@
+import { atomicWrite } from "./files.ts";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { parse, stringify } from "yaml";
 
@@ -78,11 +79,11 @@ export async function writeItem(file: string, fields: CommonFields & Record<stri
     const current = readFileSync(file, "utf8");
     const previous = splitFrontMatter(current).data?.synced;
     if (typeof previous === "string" && renderItem({ ...fields, synced: previous }, body) === current) return "unchanged";
-    await writeFile(file, renderItem(fields, body));
+    await atomicWrite(file, renderItem(fields, body));
     return "updated";
   }
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, renderItem(fields, body));
+  await atomicWrite(file, renderItem(fields, body));
   return "added";
 }
 
@@ -92,6 +93,6 @@ export async function updateFields(file: string, changes: Record<string, unknown
   const { data, body } = splitFrontMatter(current);
   if (!data || missingFields(data).length > 0) return false;
   if (Object.entries(changes).every(([key, value]) => data[key] === value)) return false;
-  await writeFile(file, renderItem({ ...(data as unknown as CommonFields), ...changes }, body));
+  await atomicWrite(file, renderItem({ ...(data as unknown as CommonFields), ...changes }, body));
   return true;
 }

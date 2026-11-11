@@ -1,9 +1,11 @@
+import { safePath } from "../../core/files.ts";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, rename, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Plugin, Reference, Scope, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem, type CommonFields, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
+import { localLookup, localizeFile, scopeCommand } from "../../core/links.ts";
 import { describeError, DevError, OutsideScope } from "../../core/output.ts";
 import { chooseMany, secret } from "../../core/prompt.ts";
 import { NotionApi, normaliseId } from "./api.ts";
@@ -92,6 +94,8 @@ async function localPages(context: ServiceContext): Promise<Map<string, { file: 
   return pages;
 }
 
+const pageFile = localLookup(async (context) => new Map([...(await localPages(context))].map(([id, page]) => [id, page.file])));
+
 interface Walk {
   api: NotionApi;
   local: Map<string, { file: string; data: Record<string, unknown> }>;
@@ -99,6 +103,8 @@ interface Walk {
   via: Via;
   root: string;
   seen: Set<string>;
+  /** A page to write again even when Notion says it hasn't changed. */
+  force?: string;
 }
 
 /** Syncs a page and the pages under it, into `dir`. */
@@ -108,18 +114,19 @@ async function syncPage(context: ServiceContext, walk: Walk, id: string, dir: st
   const current = page ?? (await walk.api.request<Page>("GET", `/pages/${id}`));
   if (current.archived || current.in_trash) return;
   const title = titleOf(current);
-  const here = path.join(dir, dirName(title, id));
+  const here = safePath(folder(context), path.relative(folder(context), path.join(dir, dirName(title, id))));
   const file = path.join(here, "index.md");
   const known = walk.local.get(id);
 
-  // Unchanged since the last sync: keep the file, and only walk to the children it recorded.
-  if (known && known.data.updated === current.last_edited_time && path.resolve(known.file) === path.resolve(file)) {
-    for (const child of Array.isArray(known.data.children) ? known.data.children.map(String) : []) {
-      await syncChild(context, walk, child, here);
+  const moved = known && known.file !== file;
+  if (known) await migratePage(walk.local, known.file, file, folder(context));
+  if (known && !moved && walk.force !== id && known.data.updated === current.last_edited_time && known.data.childKinds && typeof known.data.childKinds === "object") {
+    await updateFields(file, { inScope: walk.via === "scope", via: walk.via, root: walk.root });
+    for (const [child, kind] of Object.entries(known.data.childKinds)) {
+      await syncChild(context, walk, child, here, kind === "database" ? "database" : "page");
     }
     return;
   }
-
   const found: Array<{ id: string; kind: "page" | "database" }> = [];
   const markdown = await blocksToMarkdown(walk.api, await walk.api.all<Block>("GET", `/blocks/${id}/children`), {
     childLink: (childId, childTitle) => `${dirName(childTitle, childId)}/index.md`,
@@ -136,11 +143,12 @@ async function syncPage(context: ServiceContext, walk: Walk, id: string, dir: st
       synced: new Date().toISOString(),
       ...(current.parent.type === "database_id" ? { properties: properties(current) } : {}),
       children: found.map((c) => c.id),
+      childKinds: Object.fromEntries(found.map((c) => [c.id, c.kind])),
       root: walk.root,
       inScope: walk.via === "scope",
       via: walk.via,
     },
-    markdown,
+    await context.localize(markdown, file),
   );
   if (result !== "unchanged") walk.report[result]++;
   for (const child of found) await syncChild(context, walk, child.id, here, child.kind);
@@ -155,14 +163,38 @@ async function syncChild(context: ServiceContext, walk: Walk, id: string, dir: s
   }
 }
 
+const UNREADABLE = "The integration can't read this database's rows: it's a linked view of a database elsewhere, or the original isn't shared with the integration.";
+
+/** Notion's answer for a database the integration can see but not read: not a failed sync. */
+function unreadable(error: unknown): boolean {
+  return /does not contain any data sources accessible/i.test((error as Error).message ?? "");
+}
+
 /** A database: an index page listing its rows, and each row as a page under it. */
 async function syncDatabase(context: ServiceContext, walk: Walk, id: string, dir: string): Promise<void> {
   if (walk.seen.has(id)) return;
   walk.seen.add(id);
-  const database = await walk.api.request<Database>("GET", `/databases/${id}`);
+  let database: Database;
+  try {
+    database = await walk.api.request<Database>("GET", `/databases/${id}`);
+  } catch (error) {
+    if (!unreadable(error)) throw error;
+    (walk.report.warnings ??= []).push(`${UNREADABLE} Skipped: ${id}, under ${path.relative(folder(context), dir) || "the root"}.`);
+    return;
+  }
   const title = richText(database.title) || "Untitled database";
-  const here = path.join(dir, dirName(title, id));
-  const rows = await walk.api.all<Page>("POST", `/databases/${id}/query`);
+  const here = safePath(folder(context), path.relative(folder(context), path.join(dir, dirName(title, id))));
+  const known = walk.local.get(id);
+  if (known) await migratePage(walk.local, known.file, path.join(here, "index.md"), folder(context));
+  let rows: Page[] = [];
+  let note = "";
+  try {
+    rows = await walk.api.all<Page>("POST", `/databases/${id}/query`);
+  } catch (error) {
+    if (!unreadable(error)) throw error;
+    note = UNREADABLE;
+    (walk.report.warnings ??= []).push(`${UNREADABLE} Its rows were skipped: "${title}".`);
+  }
   const live = rows.filter((row) => !row.archived && !row.in_trash);
 
   const result = await writeItem(
@@ -180,7 +212,7 @@ async function syncDatabase(context: ServiceContext, walk: Walk, id: string, dir
       inScope: walk.via === "scope",
       via: walk.via,
     },
-    [`A Notion database with ${live.length} row${live.length === 1 ? "" : "s"}.`, "", ...live.map((row) => `- [${titleOf(row)}](${dirName(titleOf(row), row.id)}/index.md)`)].join("\n"),
+    [note ? `A Notion database. ${note}` : `A Notion database with ${live.length} row${live.length === 1 ? "" : "s"}.`, "", ...live.map((row) => `- [${titleOf(row)}](${dirName(titleOf(row), row.id)}/index.md)`)].join("\n"),
   );
   if (result !== "unchanged") walk.report[result]++;
   for (const row of live) {
@@ -192,8 +224,11 @@ async function syncDatabase(context: ServiceContext, walk: Walk, id: string, dir
   }
 }
 
+const INDEX: NonNullable<Service["index"]> = { folder: "notion", title: "Notion pages" };
+
 function index(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "Notion pages");
+  if (context.deferIndex) return;
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
 }
 
 async function sync(context: ServiceContext): Promise<SyncReport> {
@@ -212,7 +247,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
 
   // Pages in scope before and not reached now stay, marked: moved, deleted, or the root left.
   for (const [id, page] of local) {
-    if (page.data.inScope === true && !seen.has(id) && (await updateFields(page.file, { inScope: false, via: "former" }))) report.removed++;
+    if (report.failed.length === 0 && page.data.inScope === true && !seen.has(id) && (await updateFields(page.file, { inScope: false, via: "former" }))) report.removed++;
   }
   index(context);
   return report;
@@ -223,19 +258,25 @@ async function refresh(context: ServiceContext): Promise<SyncReport> {
   const report: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
   const local = await localPages(context);
   const notion = api(context);
+  const scoped = new Map<string, boolean>();
   for (const [id, page] of local) {
     if (page.data.database === true) continue;
     try {
+      // One small request tells if the page changed; only changed pages are checked against
+      // the scope and downloaded again.
       const current = await notion.request<Page>("GET", `/pages/${id}`);
-      if (current.last_edited_time === page.data.updated) continue;
+      if (current.last_edited_time === page.data.updated && page.data.childKinds) continue;
+      if (!await withinScope(context, notion, id, scoped)) continue;
+      const found: Array<{ id: string; kind: string }> = [];
       const markdown = await blocksToMarkdown(notion, await notion.all<Block>("GET", `/blocks/${id}/children`), {
+        onChild: (id, _title, kind) => found.push({ id, kind }),
         childLink: (childId, title) => {
           const child = local.get(childId);
           return child ? path.relative(path.dirname(page.file), child.file).split(path.sep).join("/") : `${dirName(title, childId)}/index.md`;
         },
       });
       const { data } = splitFrontMatter(await readFile(page.file, "utf8"));
-      if ((await writeItem(page.file, { ...(data as unknown as CommonFields), title: titleOf(current), updated: current.last_edited_time, synced: new Date().toISOString() }, markdown)) !== "unchanged") report.updated++;
+      if ((await writeItem(page.file, { ...(data as unknown as CommonFields), children: found.map((child) => child.id), childKinds: Object.fromEntries(found.map((child) => [child.id, child.kind])), title: titleOf(current), updated: current.last_edited_time, synced: new Date().toISOString() }, await context.localize(markdown, page.file))) !== "unchanged") report.updated++;
     } catch (error) {
       report.failed.push({ id, reason: describeError(error) });
     }
@@ -244,13 +285,22 @@ async function refresh(context: ServiceContext): Promise<SyncReport> {
   return report;
 }
 
-/** Whether a page is under a root in scope, by walking up its parents. Only metadata is read. */
-async function withinScope(context: ServiceContext, notion: NotionApi, id: string): Promise<boolean> {
+/**
+ * Whether a page is under a root in scope, by walking up its parents. Only metadata is read.
+ * `known` remembers the answer for every ancestor passed, so pages that share them ask once.
+ */
+async function withinScope(context: ServiceContext, notion: NotionApi, id: string, known = new Map<string, boolean>()): Promise<boolean> {
   if (context.settings.fetch === "anywhere") return true;
   const listed = roots(context.scope);
+  const walked: string[] = [];
+  let result = false;
   let current: string | undefined = id;
   for (let depth = 0; current && depth < 25; depth++) {
-    if (listed.includes(current)) return true;
+    if (listed.includes(current) || known.has(current)) {
+      result = known.get(current) ?? true;
+      break;
+    }
+    walked.push(current);
     // The id may be a page, a database or a block; each kind has its own endpoint.
     const id: string = current;
     const item = await notion
@@ -259,14 +309,17 @@ async function withinScope(context: ServiceContext, notion: NotionApi, id: strin
       .catch(() => notion.request<{ parent: Page["parent"] }>("GET", `/blocks/${id}`));
     current = item.parent.page_id ?? item.parent.database_id ?? item.parent.block_id;
   }
-  return false;
+  for (const ancestor of walked) known.set(ancestor, result);
+  return result;
 }
 
-const LINK = /https?:\/\/(?:www\.)?(?:notion\.so|[\w-]+\.notion\.site)\/[^\s)<>"'\]]*/g;
+/** Notion's own addresses: notion.so, the newer app.notion.com, and published notion.site pages. */
+const LINK = /https?:\/\/(?:[\w-]+\.)?notion\.(?:so|com|site)\/[^\s)<>"'\]]*/g;
 
 export const notionService: Service = {
   id: "notion",
   title: "Notion",
+  index: INDEX,
   description: "Pages and databases, one folder per page",
   role: "connected",
 
@@ -312,6 +365,7 @@ export const notionService: Service = {
   refresh,
 
   links: {
+    local: (context, reference) => pageFile(context, reference.id),
     find(text) {
       const found = new Map<string, Reference>();
       for (const match of text.matchAll(LINK)) {
@@ -334,6 +388,62 @@ export const notionService: Service = {
       return path.join(folder(context), dirName(titleOf(page), reference.id), "index.md");
     },
   },
+
+  commands: [
+    {
+      name: "pull",
+      description: "Pull one page again, and what it links to, within the configured fetch boundary",
+      mark: "read",
+      writes: true,
+      arguments: ["<page>"],
+      help: "The page is a Notion link, an id, or the path of its file under notion/. It's written again even if Notion says it hasn't changed, the pages and items it links to are fetched, and its links are pointed at the local copies. Pages under it are only fetched when they're new or changed.",
+      async run(context, args) {
+        const word = args[0] ?? "";
+        const local = await localPages(context);
+        const byPath = [...local].find(([, page]) => [page.file, path.dirname(page.file)].includes(path.resolve(word)))?.[0];
+        const id = byPath ?? normaliseId(word);
+        if (!id) throw new DevError(`"${word}" isn't a Notion link, an id, or a page's file under notion/.`);
+        const notion = api(context);
+        if (!(await withinScope(context, notion, id))) throw new OutsideScope(`Notion page ${word}`, `To include it: ${scopeCommand(notionService, { service: SERVICE, id, url: /^https?:/.test(word) ? word : undefined })}`);
+
+        // A page already here stays where it is, and keeps why it's here.
+        const known = local.get(id);
+        const report: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
+        const walk: Walk = { api: notion, local, report, via: (known?.data.via as Via | undefined) ?? "pulled", root: typeof known?.data.root === "string" ? known.data.root : id, seen: new Set(), force: id };
+        await syncChild(context, walk, id, known ? path.dirname(path.dirname(known.file)) : folder(context));
+        const file = (await localPages(context)).get(id)?.file;
+
+        // What the page links to, here and in the other services, then its links made local.
+        const outside: string[] = [];
+        if (file) {
+          const { body } = splitFrontMatter(await readFile(file, "utf8"));
+          for (const reference of notionService.links!.find(body, context)) {
+            if (reference.id === id) continue;
+            try {
+              await notionService.links!.fetch(context, reference);
+            } catch (error) {
+              if (error instanceof OutsideScope) outside.push(`${reference.url ?? reference.id}\n      to fetch it: ${scopeCommand(notionService, reference)}`);
+              else context.out.warn(`  Couldn't fetch ${reference.url ?? reference.id}: ${describeError(error)}`);
+            }
+          }
+          for (const found of await context.references(body)) {
+            if (found.outside) outside.push(`${found.reference.url ?? found.reference.id}${found.command ? `\n      to fetch it: ${found.command}` : ""}`);
+          }
+          await localizeFile(file, (text, target) => context.localize(text, target));
+        }
+        index(context);
+
+        for (const failure of report.failed) context.out.warn(`  ${failure.id}: ${failure.reason}`);
+        for (const warning of report.warnings ?? []) context.out.warn(`  ${warning}`);
+        if (file) context.out.info(path.relative(context.root, file));
+        if (outside.length > 0) {
+          context.out.info(`  ${outside.length} linked item${outside.length === 1 ? " is" : "s are"} outside the scope, so not fetched:`);
+          for (const item of outside) context.out.info(`    ${item}`);
+        }
+        if (report.failed.length > 0 || !file) process.exitCode = 1;
+      },
+    },
+  ],
 
   agentFiles: {
     rules: ["Read Notion pages from notion/, starting at its index.md. Never edit a Notion page unless the person asks you to in this conversation."],
@@ -367,3 +477,15 @@ const notion: Plugin = {
 };
 
 export default notion;
+
+async function migratePage(local: Map<string, { file: string; data: Record<string, unknown> }>, oldFile: string, newFile: string, base: string): Promise<void> {
+  if (oldFile === newFile || !existsSync(oldFile)) return;
+  const from = safePath(base, path.relative(base, path.dirname(oldFile)));
+  const to = safePath(base, path.relative(base, path.dirname(newFile)));
+  if (to.startsWith(from + path.sep) || existsSync(to)) throw new Error("Conflicting Notion page move; preserve both folders and resolve manually.");
+  await mkdir(path.dirname(to), { recursive: true });
+  await rename(from, to);
+  for (const page of local.values()) {
+    if (page.file === oldFile || page.file.startsWith(from + path.sep)) page.file = path.join(to, path.relative(from, page.file));
+  }
+}

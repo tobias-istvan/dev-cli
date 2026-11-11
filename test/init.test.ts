@@ -71,7 +71,7 @@ exit 1
     }
     response.writeHead(404).end("{}");
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   // A small local repository for init to clone.

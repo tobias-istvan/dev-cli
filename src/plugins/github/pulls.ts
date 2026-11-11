@@ -1,7 +1,9 @@
+import { reviewCurrent } from "../../core/reviews.ts";
+import { atomicWrite } from "../../core/files.ts";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ServiceContext, SyncReport } from "../types.ts";
+import type { Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
@@ -102,7 +104,7 @@ async function classify(context: ServiceContext, pr: Summary): Promise<ReviewSta
   const synced = await syncedVersion(dir);
   if (synced === null) return "new";
   if (synced !== pr.updated_at) return "updated";
-  return existsSync(path.join(dir, REVIEW)) ? "current" : "unreviewed";
+  return reviewCurrent(context.root, `pr-${pr.number}`, path.join(dir, REVIEW), synced) ? "current" : "unreviewed";
 }
 
 function when(comment: Comment): string {
@@ -136,7 +138,7 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
   const base = `/repos/${repo}`;
   const [pr, files, comments, reviews, inline] = await Promise.all([
     api.get<Detail>(`${base}/pulls/${number}`),
-    api.list<{ filename: string; additions: number; deletions: number }>(`${base}/pulls/${number}/files`, 3000),
+    api.listUpTo<{ filename: string; additions: number; deletions: number }>(`${base}/pulls/${number}/files`, 3000),
     api.list<Comment>(`${base}/issues/${number}/comments`),
     api.list<Comment>(`${base}/pulls/${number}/reviews`),
     api.list<Comment>(`${base}/pulls/${number}/comments`),
@@ -148,7 +150,7 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
   const linkLines = references.map((r) =>
     r.file
       ? `- ${r.reference.id}: [${r.file.split(path.sep).join("/")}](${path.posix.relative(`${FOLDER}/${number}`, r.file.split(path.sep).join("/"))})`
-      : `- ${r.reference.url ?? r.reference.id} (${r.outside ? "outside the scope, not fetched" : "not fetched"})`,
+      : `- ${r.reference.url ?? r.reference.id} (${r.outside ? `outside the scope, not fetched${r.command ? `. To fetch it: \`${r.command}\`` : ""}` : "not fetched"})`,
   );
 
   const fields = {
@@ -181,15 +183,18 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
       "",
       "## Changed files",
       "",
-      ...files.map((f) => `- \`${f.filename}\` +${f.additions} −${f.deletions}`),
+      ...files.items.map((f) => `- \`${f.filename}\` +${f.additions} −${f.deletions}`),
+      ...(files.items.length < pr.changed_files ? ["", `_Only ${files.items.length} of ${pr.changed_files} files are listed; the diff has the rest._`] : []),
       "",
       "Read the diff with `gh pr diff " + number + "`. Write your review in review.md in this folder.",
   ].join("\n");
 
   const dir = path.join(folder(context), String(number));
   await mkdir(dir, { recursive: true });
+  const previous = await syncedVersion(dir);
+  if (previous) reviewCurrent(context.root, `pr-${number}`, path.join(dir, REVIEW), previous);
   await writeItem(path.join(dir, DESCRIPTION), fields, body);
-  await writeFile(path.join(dir, "comments.md"), renderComments(number, comments, reviews, inline));
+  await atomicWrite(path.join(dir, "comments.md"), renderComments(number, comments, reviews, inline));
   return {
     comments: comments.length + reviews.filter((r) => (r.body ?? "").trim()).length + inline.length,
     links,
@@ -198,9 +203,11 @@ export async function pullRequest(context: ServiceContext, api: GitHubApi, repo:
   };
 }
 
+export const INDEX: NonNullable<Service["index"]> = { folder: FOLDER, title: "Pull requests under review", include: (file) => path.posix.basename(file) === DESCRIPTION };
+
 export function indexPulls(context: ServiceContext): void {
   const dir = folder(context);
-  if (existsSync(dir)) buildIndex(dir, "Pull requests under review", (file) => path.posix.basename(file) === DESCRIPTION);
+  if (existsSync(dir)) buildIndex(dir, INDEX.title, INDEX.include);
 }
 
 /** Finds the PRs that need review and, unless told not to, pulls them. */
@@ -269,7 +276,7 @@ export async function waitingForReview(context: ServiceContext): Promise<Array<{
         number: Number(entry.name),
         title: String(data.title ?? ""),
         author: String(data.author ?? ""),
-        reviewed: existsSync(path.join(dir, entry.name, REVIEW)),
+        reviewed: reviewCurrent(context.root, `pr-${entry.name}`, path.join(dir, entry.name, REVIEW), String(data.updated)),
       });
     } catch {
       // A half-written folder: the next poll repairs it.

@@ -1,3 +1,4 @@
+import { taskId } from "../src/core/tasks.ts";
 /** GitHub Issues as a second task source, against a fake GitHub API. */
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
@@ -18,7 +19,7 @@ let base: string;
 let origin: string;
 let server: Server;
 let apiUrl: string;
-const state = { closed: [] as number[] };
+const state = { closed: [] as number[], lookups: 0 };
 
 const issue = (number: number, title: string, assignee: string | null, extra: Record<string, unknown> = {}) => ({
   number,
@@ -54,6 +55,7 @@ before(async () => {
     const one = p.match(/^\/repos\/acme\/web\/issues\/(\d+)$/);
     if (one?.[1]) {
       const n = Number(one[1]);
+      state.lookups++;
       if (n === 5) return json(200, issue(5, "Login button", "me"));
       if (n === 6) return json(200, issue(6, "Someone else's", "kim"));
       if (n === 8) return json(200, issue(8, "A pull request", "me", { pull_request: {} }));
@@ -61,7 +63,7 @@ before(async () => {
     if (p === "/repos/other/lib/issues/3") return json(200, { ...issue(3, "Elsewhere", null), html_url: "https://github.com/other/lib/issues/3" });
     return json(404, { message: "Not Found" });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const seed = path.join(base, "seed");
@@ -129,6 +131,9 @@ test("issues sync keeps your open issues, one folder each, and leaves pull reque
     const closed = await dev(root, ["sync", "github-issues"]);
     assert.match(closed.out, /0 new, 1 updated, 0 removed/);
     assert.match(readFileSync(path.join(root, "github-issues", "acme-web-5", "issue.md"), "utf8"), /status: closed/);
+    const before = state.lookups;
+    assert.match((await dev(root, ["sync", "github-issues"])).out, /0 new, 0 updated, 0 removed/);
+    assert.equal(state.lookups, before, "a closed issue isn't looked up again on every sync");
   } finally {
     state.closed = [];
   }
@@ -150,8 +155,8 @@ test("task start on an issue fetches it and what it links to, with a fix branch 
   const result = await dev(root, ["task", "start", "acme/web#5"]);
   assert.equal(result.code, 0, result.err);
   assert.match(result.out, /GitHub Issues: Login button/);
-  assert.match(result.out, /on fix\/acme-web-5-login-button/);
-  const brief = readFileSync(path.join(root, "tasks", "acme-web-5", "brief.md"), "utf8");
+  assert.ok(result.out.includes(`on fix/${taskId("github-issues:acme/web#5")}-login-button`));
+  const brief = readFileSync(path.join(root, "tasks", taskId("github-issues:acme/web#5"), "brief.md"), "utf8");
   assert.match(brief, /\[github-issues\/acme-web-5\/issue\.md\]/);
   assert.match(brief, /\[notes\/N-1\.md\]/);
 });

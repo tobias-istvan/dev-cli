@@ -11,10 +11,18 @@ export class DevError extends Error {
   }
 }
 
+/** The service has no such item: deleted, moved, or hidden from this login. */
+export class NotFound extends DevError {
+  constructor(message: string, fix?: string) {
+    super(message, fix);
+    this.name = "NotFound";
+  }
+}
+
 /** A fetch refused because the item is outside the scope, and the workspace only fetches within it. */
 export class OutsideScope extends DevError {
-  constructor(what: string) {
-    super(`${what} is outside this workspace's scope, so it wasn't fetched.`, 'To allow it, set "fetch: anywhere" for that service in dev.yaml.');
+  constructor(what: string, hint = 'To allow it, set "fetch: anywhere" for that service in dev.yaml.') {
+    super(`${what} is outside this workspace's scope, so it wasn't fetched.`, hint);
     this.name = "OutsideScope";
   }
 }

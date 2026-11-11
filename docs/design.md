@@ -119,7 +119,7 @@ versioning:
   repo: acme/web
 services:
   - service: atlassian:jira
-    scope: { project: ABC, filter: "assignee = currentUser() AND statusCategory != Done" }
+    scope: { project: ABC, jql: "assignee = currentUser() AND statusCategory != Done" }
   - service: atlassian:confluence
     scope: { roots: [12345, 67890] }
 plugins:
@@ -220,7 +220,7 @@ block.
 4. Log in to each plugin not logged in yet. A plugin's later services reuse its login.
 5. Pick each service's scope.
 6. Write `dev.yaml`, the folders, agent files, hooks, skills, docs and MCP entries.
-7. Clone the repository, and with `--sync`, run the first `dev day start`.
+7. Clone the repository, then run `dev day start` separately.
 
 Every question has a flag, so init can run without a terminal. Running it again on an
 existing workspace keeps what's there and offers what's missing.
@@ -313,12 +313,11 @@ Each sync fingerprints every recorded frame's content and records when it change
 
 - **With a personal access token** (read-only file content), through Figma's REST API: one
   request per file, for any file, without Figma desktop running.
-- **Without one**, through the local MCP server, if Figma desktop is running. That server
-  reads whichever file is open and can't say which, so a frame only counts when its name
-  matches the one recorded earlier. Frames in files that aren't open are skipped, and said so.
+- **Without one**, the local MCP can inspect whichever file is open, but cannot establish
+  its file identity. Checks are reported as unverified and do not update authoritative
+  change-detection fingerprints. A token is required for verified change detection.
 
-Fingerprints from the two methods aren't compared with each other: switching methods
-starts a new baseline. Designs that changed in the last week appear in the snapshot.
+Desktop metadata is never compared with verified REST fingerprints. Designs that changed in the last week appear in the snapshot.
 
 ## GitLab
 

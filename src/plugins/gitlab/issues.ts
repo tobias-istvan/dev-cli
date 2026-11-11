@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import type { Reference, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError, OutsideScope, describeError } from "../../core/output.ts";
+import { describeOutside } from "../../core/links.ts";
+import { DevError, NotFound, OutsideScope, describeError } from "../../core/output.ts";
 import { choose } from "../../core/prompt.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitLabApi, projectId } from "./api.ts";
@@ -51,7 +52,7 @@ function folder(context: ServiceContext): string {
 }
 
 const key = (project: string, iid: number) => `${project}#${iid}`;
-const dirName = (project: string, iid: number) => `${project.replace(/\//g, "-")}-${iid}`;
+const dirName = (project: string, iid: number) => `${project.split("/").map((part) => encodeURIComponent(part).replace(/-/g, "%2D")).join("-")}-${iid}`;
 
 function file(context: ServiceContext, project: string, iid: number): string {
   return path.join(folder(context), dirName(project, iid), ISSUE);
@@ -61,8 +62,22 @@ async function write(context: ServiceContext, api: GitLabApi, project: string, i
   const notes = issue.user_notes_count > 0 ? (await api.list<Note>(`/projects/${projectId(project)}/issues/${issue.iid}/notes?sort=asc`)).filter((n) => !n.system) : [];
   const assignees = (issue.assignees ?? []).map((a) => a.username);
   const labels = issue.labels ?? [];
+  const target = file(context, project, issue.iid);
+  const body = [
+    `# ${key(project, issue.iid)}: ${issue.title}`,
+    "",
+    [`**State:** ${issue.state === "opened" ? "open" : "closed"}`, `**Opened by:** ${issue.author.username}`, ...(assignees.length > 0 ? [`**Assigned:** ${assignees.join(", ")}`] : []), ...(labels.length > 0 ? [`**Labels:** ${labels.join(", ")}`] : [])].join(" · "),
+    "",
+    "## Description",
+    "",
+    (issue.description ?? "").trim() || "_No description._",
+    "",
+    `## Comments (${notes.length})`,
+    "",
+    notes.length > 0 ? notes.map((n) => `### ${n.author?.username ?? "unknown"} · ${(n.created_at ?? "").slice(0, 16).replace("T", " ")}\n\n${(n.body ?? "").trim() || "_(empty)_"}`).join("\n\n") : "_No comments._",
+  ].join("\n");
   return writeItem(
-    file(context, project, issue.iid),
+    target,
     {
       id: key(project, issue.iid),
       title: issue.title,
@@ -80,20 +95,20 @@ async function write(context: ServiceContext, api: GitLabApi, project: string, i
       inScope: via === "scope",
       via,
     },
-    [
-      `# ${key(project, issue.iid)}: ${issue.title}`,
-      "",
-      [`**State:** ${issue.state === "opened" ? "open" : "closed"}`, `**Opened by:** ${issue.author.username}`, ...(assignees.length > 0 ? [`**Assigned:** ${assignees.join(", ")}`] : []), ...(labels.length > 0 ? [`**Labels:** ${labels.join(", ")}`] : [])].join(" · "),
-      "",
-      "## Description",
-      "",
-      (issue.description ?? "").trim() || "_No description._",
-      "",
-      `## Comments (${notes.length})`,
-      "",
-      notes.length > 0 ? notes.map((n) => `### ${n.author?.username ?? "unknown"} · ${(n.created_at ?? "").slice(0, 16).replace("T", " ")}\n\n${(n.body ?? "").trim() || "_(empty)_"}`).join("\n\n") : "_No comments._",
-    ].join("\n"),
+    await context.localize(body, target),
   );
+}
+
+/**
+ * Folders used to be named with plain hyphens, so owner/a-b#1 and owner-a/b#1 collided. An
+ * issue still in its old folder moves to its new one, notes and all, so nothing is duplicated.
+ */
+async function migrateDir(context: ServiceContext, repo: string, number: number): Promise<void> {
+  const old = path.join(folder(context), `${repo.replace(/\//g, "-")}-${number}`);
+  const current = path.join(folder(context), dirName(repo, number));
+  if (old === current || !existsSync(path.join(old, ISSUE)) || existsSync(current)) return;
+  const { data } = splitFrontMatter(await readFile(path.join(old, ISSUE), "utf8"));
+  if (String(data?.project) === repo && Number(data?.iid) === number) await rename(old, current);
 }
 
 async function localItems(context: ServiceContext): Promise<Array<{ dir: string; data: Record<string, unknown> }>> {
@@ -103,13 +118,25 @@ async function localItems(context: ServiceContext): Promise<Array<{ dir: string;
     const target = path.join(folder(context), entry.name, ISSUE);
     if (!entry.isDirectory() || !existsSync(target)) continue;
     const { data } = splitFrontMatter(await readFile(target, "utf8"));
-    if (data) items.push({ dir: entry.name, data });
+    if (!data) continue;
+    const name = dirName(String(data.project), Number(data.iid));
+    if (name !== entry.name && !existsSync(path.join(folder(context), name))) {
+      await migrateDir(context, String(data.project), Number(data.iid));
+      if (existsSync(path.join(folder(context), name, ISSUE))) {
+        items.push({ dir: name, data });
+        continue;
+      }
+    }
+    items.push({ dir: entry.name, data });
   }
   return items;
 }
 
+const INDEX: NonNullable<Service["index"]> = { folder: "gitlab-issues", title: "GitLab issues", include: (f) => path.posix.basename(f) === ISSUE };
+
 function index(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "GitLab issues", (f) => path.posix.basename(f) === ISSUE);
+  if (context.deferIndex) return;
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
 }
 
 async function sync(context: ServiceContext): Promise<SyncReport> {
@@ -120,12 +147,20 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const local = await localItems(context);
   const known = new Map(local.map((item) => [String(item.data.id), item.data]));
   const seen = new Set<string>();
+  const failedScopes = new Set<string>();
+  const partialScopes = new Set<string>();
 
   for (const project of projects(context)) {
     let issues: Issue[];
     try {
-      issues = await api.list<Issue>(`/projects/${projectId(project)}/issues?state=opened${mineOnly ? `&assignee_username=${encodeURIComponent(me)}` : ""}`);
+      const listed = await api.listUpTo<Issue>(`/projects/${projectId(project)}/issues?state=opened${mineOnly ? `&assignee_username=${encodeURIComponent(me)}` : ""}`, ISSUE_LIMIT);
+      issues = listed.items;
+      if (listed.truncated) {
+        partialScopes.add(project);
+        (report.warnings ??= []).push(`${project}: more than ${ISSUE_LIMIT} open issues, so only the newest were synced and none were marked as gone. Narrow the scope, like assigned: me.`);
+      }
     } catch (error) {
+      failedScopes.add(project);
       report.failed.push({ id: project, reason: describeError(error) });
       continue;
     }
@@ -133,7 +168,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
       const id = key(project, issue.iid);
       seen.add(id);
       const existing = known.get(id);
-      if (existing && existing.updated === issue.updated_at && existing.inScope === true) continue;
+      if (existing && existing.updated === issue.updated_at && existing.inScope === true && existing.mine === (issue.assignees ?? []).some((a) => a.username === me)) continue;
       try {
         const result = await write(context, api, project, issue, me, "scope");
         if (result === "added") report.added++;
@@ -146,17 +181,17 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
 
   for (const item of local) {
     const id = String(item.data.id);
-    if (item.data.inScope !== true || seen.has(id)) continue;
+    // Closed issues rarely change, so only open ones that left the listing are looked up again.
+    if (seen.has(id) || item.data.status === "closed" || item.data.gone === true || failedScopes.has(String(item.data.project)) || partialScopes.has(String(item.data.project))) continue;
     const project = String(item.data.project);
     try {
       const issue = await api.get<Issue>(`/projects/${projectId(project)}/issues/${String(item.data.iid)}`);
-      if (issue.state === "closed") {
-        if ((await write(context, api, project, issue, me, "scope")) !== "unchanged") report.updated++;
-      } else if (await updateFields(path.join(folder(context), item.dir, ISSUE), { inScope: false, via: "former" })) {
-        report.removed++;
-      }
+      const reason: Via = issue.state === "closed" && item.data.inScope === true ? "scope" : item.data.inScope === true ? "former" : (String(item.data.via ?? "linked") as Via);
+      if ((await write(context, api, project, issue, me, reason)) !== "unchanged") report.updated++;
     } catch (error) {
-      report.failed.push({ id, reason: describeError(error) });
+      // Deleted, moved or hidden from this login: the copy stays, marked, and isn't asked for again.
+      if (!(error instanceof NotFound)) report.failed.push({ id, reason: describeError(error) });
+      else if ((await updateFields(path.join(folder(context), item.dir, ISSUE), { ...(item.data.inScope === true ? { inScope: false, via: "former" } : {}), gone: true })) && item.data.inScope === true) report.removed++;
     }
   }
 
@@ -193,7 +228,10 @@ function parseKey(id: string): { project: string; iid: number } {
 }
 
 async function fetchOne(context: ServiceContext, reference: Reference, via: Via = "linked"): Promise<string> {
+  const cached = context.fetched?.get(reference.id);
+  if (cached) return cached;
   const { project, iid } = parseKey(reference.id);
+  await migrateDir(context, project, iid);
   if (context.settings.fetch === "within-scope" && !projects(context).includes(project)) throw new OutsideScope(`GitLab issue ${reference.id}`);
   const api = GitLabApi.from(context.credentials());
   const issue = await api.get<Issue>(`/projects/${projectId(project)}/issues/${iid}`);
@@ -202,12 +240,17 @@ async function fetchOne(context: ServiceContext, reference: Reference, via: Via 
   if (existsSync(target) && splitFrontMatter(await readFile(target, "utf8")).data?.via === "scope") reason = "scope";
   await write(context, api, project, issue, (await api.get<{ username: string }>("/user")).username, reason);
   index(context);
+  context.fetched?.set(reference.id, target);
   return target;
 }
+
+/** How many open issues a scope lists before dev stops and warns, instead of downloading without end. */
+const ISSUE_LIMIT = 5000;
 
 export const gitlabIssues: Service = {
   id: "gitlab-issues",
   title: "GitLab Issues",
+  index: INDEX,
   description: "Issues, one folder per issue",
   role: "connected",
 
@@ -240,7 +283,7 @@ export const gitlabIssues: Service = {
       const added: string[] = [];
       const problems = [];
       for (const item of items) {
-        const project = item.replace(/^https?:\/\/[^/]+\//, "").replace(/\/-\/.*$/, "").replace(/\.git$/, "").replace(/\/$/, "");
+        const project = item.replace(/^https?:\/\/[^/]+\//, "").replace(/\/-\/.*$/, "").replace(/#\d+$/, "").replace(/\.git$/, "").replace(/\/$/, "");
         if (!/^[\w.-]+(\/[\w.-]+)+$/.test(project)) problems.push({ message: `"${item}" isn't a project, like group/project.` });
         else if (!list.includes(project) && !added.includes(project)) added.push(project);
       }
@@ -267,7 +310,14 @@ export const gitlabIssues: Service = {
     },
   },
 
-  links: { find, fetch: (context, reference) => fetchOne(context, reference) },
+  links: {
+    find,
+    fetch: (context, reference) => fetchOne(context, reference),
+    async local(context, reference) {
+      const { project, iid } = parseKey(reference.id);
+      return existsSync(file(context, project, iid)) ? file(context, project, iid) : null;
+    },
+  },
 
   contribute: {
     async taskStart(context, reference) {
@@ -277,7 +327,7 @@ export const gitlabIssues: Service = {
       const notFetched: string[] = [];
       for (const found of await context.references(body)) {
         if (found.file) files.push(found.file);
-        else if (found.outside) notFetched.push(found.reference.url ?? found.reference.id);
+        else if (found.outside) notFetched.push(describeOutside(found));
       }
       const labels = Array.isArray(data?.labels) ? data.labels.map(String) : [];
       return {
@@ -304,8 +354,9 @@ export const gitlabIssues: Service = {
   commands: [
     {
       name: "pull",
-      description: "Pull specific issues, in scope or not",
+      description: "Pull specific issues, within the configured fetch boundary",
       mark: "read",
+      writes: true,
       arguments: ["<issues...>"],
       help: "Each issue is group/project#42, its link, or a number in the workspace's project.",
       async run(context, args) {

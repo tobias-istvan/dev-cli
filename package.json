@@ -1,6 +1,6 @@
 {
   "name": "@tobias.istvan/dev",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Set up a workspace around a code repository, and gather the tickets, docs and designs each task needs, for people and AI agents",
   "license": "MIT",
   "author": "Istvan Tobias",
@@ -17,11 +17,13 @@
   },
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"require('node:fs').chmodSync('dist/cli.js',0o755)\"",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test \"test/**/*.test.ts\"",
-    "prepack": "npm run build"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "node --experimental-strip-types --import ./test/setup.ts --test --test-timeout=120000 \"test/**/*.test.ts\"",
+    "prepack": "npm run build",
+    "test:package": "node --experimental-strip-types test/package-smoke.ts"
   },
   "dependencies": {
+    "@inquirer/core": "^12.0.6",
     "@inquirer/prompts": "^8.7.5",
     "cheerio": "^1.2.0",
     "commander": "^15.1.0",

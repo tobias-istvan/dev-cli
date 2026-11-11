@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import type { Reference, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
-import { DevError, OutsideScope, describeError } from "../../core/output.ts";
+import { describeOutside } from "../../core/links.ts";
+import { DevError, NotFound, OutsideScope, describeError } from "../../core/output.ts";
 import { choose } from "../../core/prompt.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitHubApi, webBase } from "./api.ts";
@@ -44,7 +45,8 @@ interface Comment {
 function repos(context: ServiceContext): string[] {
   const listed = Array.isArray(context.scope.repos) ? context.scope.repos.map(String) : [];
   if (listed.length > 0) return listed;
-  const own = loadConfig(context.root).versioning?.repo;
+  const versioning = loadConfig(context.root).versioning;
+  const own = versioning?.service === "github:github" ? versioning.repo : undefined;
   return own ? [own] : [];
 }
 
@@ -57,7 +59,7 @@ function key(repo: string, number: number): string {
 }
 
 function dirName(repo: string, number: number): string {
-  return `${repo.replace("/", "-")}-${number}`;
+  return `${repo.split("/").map((part) => encodeURIComponent(part).replace(/-/g, "%2D")).join("-")}-${number}`;
 }
 
 function file(context: ServiceContext, repo: string, number: number): string {
@@ -89,8 +91,9 @@ async function write(context: ServiceContext, api: GitHubApi, repo: string, issu
       : "_No comments._",
   ].join("\n");
 
+  const target = file(context, repo, issue.number);
   return writeItem(
-    file(context, repo, issue.number),
+    target,
     {
       id: key(repo, issue.number),
       title: issue.title,
@@ -108,8 +111,20 @@ async function write(context: ServiceContext, api: GitHubApi, repo: string, issu
       inScope: via === "scope",
       via,
     },
-    body,
+    await context.localize(body, target),
   );
+}
+
+/**
+ * Folders used to be named with plain hyphens, so owner/a-b#1 and owner-a/b#1 collided. An
+ * issue still in its old folder moves to its new one, notes and all, so nothing is duplicated.
+ */
+async function migrateDir(context: ServiceContext, repo: string, number: number): Promise<void> {
+  const old = path.join(folder(context), `${repo.replace("/", "-")}-${number}`);
+  const current = path.join(folder(context), dirName(repo, number));
+  if (old === current || !existsSync(path.join(old, ISSUE)) || existsSync(current)) return;
+  const { data } = splitFrontMatter(await readFile(path.join(old, ISSUE), "utf8"));
+  if (String(data?.repo) === repo && Number(data?.number) === number) await rename(old, current);
 }
 
 async function localItems(context: ServiceContext): Promise<Array<{ dir: string; data: Record<string, unknown> }>> {
@@ -119,13 +134,25 @@ async function localItems(context: ServiceContext): Promise<Array<{ dir: string;
     const target = path.join(folder(context), entry.name, ISSUE);
     if (!entry.isDirectory() || !existsSync(target)) continue;
     const { data } = splitFrontMatter(await readFile(target, "utf8"));
-    if (data) items.push({ dir: entry.name, data });
+    if (!data) continue;
+    const name = dirName(String(data.repo), Number(data.number));
+    if (name !== entry.name && !existsSync(path.join(folder(context), name))) {
+      await migrateDir(context, String(data.repo), Number(data.number));
+      if (existsSync(path.join(folder(context), name, ISSUE))) {
+        items.push({ dir: name, data });
+        continue;
+      }
+    }
+    items.push({ dir: entry.name, data });
   }
   return items;
 }
 
+const INDEX: NonNullable<Service["index"]> = { folder: "github-issues", title: "GitHub issues", include: (f) => path.posix.basename(f) === ISSUE };
+
 function index(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "GitHub issues", (f) => path.posix.basename(f) === ISSUE);
+  if (context.deferIndex) return;
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
 }
 
 async function sync(context: ServiceContext): Promise<SyncReport> {
@@ -136,12 +163,20 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const local = await localItems(context);
   const known = new Map(local.map((item) => [String(item.data.id), item.data]));
   const seen = new Set<string>();
+  const failedScopes = new Set<string>();
+  const partialScopes = new Set<string>();
 
   for (const repo of repos(context)) {
     let issues: Issue[];
     try {
-      issues = (await api.list<Issue>(`/repos/${repo}/issues?state=open${mineOnly ? `&assignee=${encodeURIComponent(me)}` : ""}`)).filter((i) => !i.pull_request);
+      const listed = await api.listUpTo<Issue>(`/repos/${repo}/issues?state=open${mineOnly ? `&assignee=${encodeURIComponent(me)}` : ""}`, ISSUE_LIMIT);
+      issues = listed.items.filter((i) => !i.pull_request);
+      if (listed.truncated) {
+        partialScopes.add(repo);
+        (report.warnings ??= []).push(`${repo}: more than ${ISSUE_LIMIT} open issues, so only the newest were synced and none were marked as gone. Narrow the scope, like assigned: me.`);
+      }
     } catch (error) {
+      failedScopes.add(repo);
       report.failed.push({ id: repo, reason: describeError(error) });
       continue;
     }
@@ -149,7 +184,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
       const id = key(repo, issue.number);
       seen.add(id);
       const existing = known.get(id);
-      if (existing && existing.updated === issue.updated_at && existing.inScope === true) continue;
+      if (existing && existing.updated === issue.updated_at && existing.inScope === true && existing.mine === (issue.assignees ?? []).some((a) => a.login === me)) continue;
       try {
         const result = await write(context, api, repo, issue, me, "scope");
         if (result === "added") report.added++;
@@ -164,17 +199,17 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   // done; the rest stay, marked as formerly in scope.
   for (const item of local) {
     const id = String(item.data.id);
-    if (item.data.inScope !== true || seen.has(id)) continue;
+    // Closed issues rarely change, so only open ones that left the listing are looked up again.
+    if (seen.has(id) || item.data.status === "closed" || item.data.gone === true || failedScopes.has(String(item.data.repo)) || partialScopes.has(String(item.data.repo))) continue;
     const repo = String(item.data.repo);
     try {
       const issue = await api.get<Issue>(`/repos/${repo}/issues/${String(item.data.number)}`);
-      if (issue.state === "closed") {
-        if ((await write(context, api, repo, issue, me, "scope")) !== "unchanged") report.updated++;
-      } else if (await updateFields(path.join(folder(context), item.dir, ISSUE), { inScope: false, via: "former" })) {
-        report.removed++;
-      }
+      const reason: Via = issue.state === "closed" && item.data.inScope === true ? "scope" : item.data.inScope === true ? "former" : (String(item.data.via ?? "linked") as Via);
+      if ((await write(context, api, repo, issue, me, reason)) !== "unchanged") report.updated++;
     } catch (error) {
-      report.failed.push({ id, reason: describeError(error) });
+      // Deleted, transferred or hidden from this login: the copy stays, marked, and isn't asked for again.
+      if (!(error instanceof NotFound)) report.failed.push({ id, reason: describeError(error) });
+      else if ((await updateFields(path.join(folder(context), item.dir, ISSUE), { ...(item.data.inScope === true ? { inScope: false, via: "former" } : {}), gone: true })) && item.data.inScope === true) report.removed++;
     }
   }
 
@@ -213,11 +248,15 @@ function parseKey(id: string): { repo: string; number: number } {
 }
 
 async function fetchOne(context: ServiceContext, reference: Reference, via: Via = "linked"): Promise<string> {
+  const cached = context.fetched?.get(reference.id);
+  if (cached) return cached;
   const { repo, number } = parseKey(reference.id);
+  await migrateDir(context, repo, number);
   if (context.settings.fetch === "within-scope" && !repos(context).includes(repo)) throw new OutsideScope(`GitHub issue ${reference.id}`);
   const api = GitHubApi.from(context.credentials());
   const issue = await api.get<Issue>(`/repos/${repo}/issues/${number}`);
-  if (issue.pull_request) throw new DevError(`${reference.id} is a pull request, not an issue.`);
+  // GitHub writes both as owner/name#N, so a reference can't tell them apart: there's no such issue.
+  if (issue.pull_request) throw new NotFound(`${reference.id} is a pull request, not an issue.`);
 
   const target = file(context, repo, number);
   let reason = via;
@@ -228,6 +267,7 @@ async function fetchOne(context: ServiceContext, reference: Reference, via: Via 
   const me = (await api.get<{ login: string }>("/user")).login;
   await write(context, api, repo, issue, me, reason);
   index(context);
+  context.fetched?.set(reference.id, target);
   return target;
 }
 
@@ -243,9 +283,13 @@ function referenceFrom(context: ServiceContext, word: string): Reference {
   return found[0];
 }
 
+/** How many open issues a scope lists before dev stops and warns, instead of downloading without end. */
+const ISSUE_LIMIT = 5000;
+
 export const issues: Service = {
   id: "github-issues",
   title: "GitHub Issues",
+  index: INDEX,
   description: "Issues, one folder per issue",
   role: "connected",
 
@@ -277,7 +321,8 @@ export const issues: Service = {
       const added: string[] = [];
       const problems = [];
       for (const item of items) {
-        const repo = item.replace(/^https?:\/\/[^/]+\//, "").replace(/\.git$/, "").replace(/\/$/, "");
+        // A repository, or an issue in it, by name or link.
+        const repo = item.replace(/^https?:\/\/[^/]+\//, "").replace(/(?:\/(?:issues|pull)\/\d+.*|#\d+)$/, "").replace(/\.git$/, "").replace(/\/$/, "");
         if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) problems.push({ message: `"${item}" isn't a repository, like owner/name.` });
         else if (!list.includes(repo) && !added.includes(repo)) added.push(repo);
       }
@@ -304,7 +349,14 @@ export const issues: Service = {
     },
   },
 
-  links: { find: (text, context) => find(text, context), fetch: (context, reference) => fetchOne(context, reference) },
+  links: {
+    find: (text, context) => find(text, context),
+    fetch: (context, reference) => fetchOne(context, reference),
+    async local(context, reference) {
+      const { repo, number } = parseKey(reference.id);
+      return existsSync(file(context, repo, number)) ? file(context, repo, number) : null;
+    },
+  },
 
   contribute: {
     async taskStart(context, reference) {
@@ -314,7 +366,7 @@ export const issues: Service = {
       const notFetched: string[] = [];
       for (const found of await context.references(body)) {
         if (found.file) files.push(found.file);
-        else if (found.outside) notFetched.push(found.reference.url ?? found.reference.id);
+        else if (found.outside) notFetched.push(describeOutside(found));
       }
       const labels = Array.isArray(data?.labels) ? data.labels.map(String) : [];
       return {
@@ -343,8 +395,9 @@ export const issues: Service = {
   commands: [
     {
       name: "pull",
-      description: "Pull specific issues, in scope or not",
+      description: "Pull specific issues, within the configured fetch boundary",
       mark: "read",
+      writes: true,
       arguments: ["<issues...>"],
       help: "Each issue is owner/name#42, its link, or a number in the workspace's repository.",
       async run(context, args) {

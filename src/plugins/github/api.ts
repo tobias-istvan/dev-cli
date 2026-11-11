@@ -1,6 +1,7 @@
+import { boundedFetch, providerUrl } from "../../core/network.ts";
 import { spawnSync } from "node:child_process";
 import type { Credentials } from "../types.ts";
-import { DevError } from "../../core/output.ts";
+import { DevError, NotFound } from "../../core/output.ts";
 
 /**
  * GitHub's REST API, with a token from one of two places:
@@ -25,7 +26,7 @@ export function webBase(): string {
 
 /** The gh accounts logged in on this machine, by reading gh's own status. */
 export function ghAccounts(): string[] {
-  const result = spawnSync("gh", ["auth", "status", "--hostname", HOST], { encoding: "utf8" });
+  const result = spawnSync("gh", ["auth", "status", "--hostname", HOST], { encoding: "utf8", timeout: 15_000 });
   if (result.error) {
     throw new DevError("The GitHub CLI (gh) isn't installed.", 'Install it, run "gh auth login", or log in with a token instead.');
   }
@@ -39,7 +40,7 @@ export function ghAccounts(): string[] {
 
 /** A gh account's token, straight from gh. Only ever held in memory. */
 export function ghToken(user: string): string {
-  const result = spawnSync("gh", ["auth", "token", "--hostname", HOST, "--user", user], { encoding: "utf8" });
+  const result = spawnSync("gh", ["auth", "token", "--hostname", HOST, "--user", user], { encoding: "utf8", timeout: 15_000 });
   const token = result.stdout?.trim();
   if (result.error || result.status !== 0 || !token) {
     throw new DevError(`gh has no working login for the account ${user}.`, `Run "gh auth login" for ${user}, then try again.`);
@@ -67,7 +68,7 @@ export class GitHubApi {
   private async fetch(url: string): Promise<Response> {
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await boundedFetch(url, {
         headers: {
           Authorization: `Bearer ${this.token}`,
           Accept: "application/vnd.github+json",
@@ -96,20 +97,21 @@ export class GitHubApi {
           return undefined;
         }
       })();
-      throw new DevError(`GitHub answered ${response.status} for ${new URL(url).pathname}${message ? `: ${message}` : ""}.`);
+      const text = `GitHub answered ${response.status} for ${new URL(url).pathname}${message ? `: ${message}` : ""}.`;
+      throw response.status === 404 || response.status === 410 ? new NotFound(text) : new DevError(text);
     }
     return response;
   }
 
   async get<T>(path: string): Promise<T> {
-    return (await (await this.fetch(`${apiBase()}${path}`)).json()) as T;
+    return (await (await this.fetch(providerUrl(`${apiBase()}${path}`, apiBase()))).json()) as T;
   }
 
   /** A GraphQL query. GitHub Projects is only reachable this way. */
   async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     let response: Response;
     try {
-      response = await fetch(`${apiBase()}/graphql`, {
+      response = await boundedFetch(providerUrl(`${apiBase()}/graphql`, apiBase()), {
         method: "POST",
         headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json", "User-Agent": "dev-cli" },
         body: JSON.stringify({ query, variables }),
@@ -118,6 +120,7 @@ export class GitHubApi {
       throw new DevError(`Couldn't reach GitHub: ${(error as Error).message}.`, "Check your connection, then try again.");
     }
     if (response.status === 401) throw new DevError("GitHub rejected the saved login.", 'Run "dev login github" again.');
+    if (!response.ok) throw new DevError(`GitHub GraphQL answered ${response.status}.`);
     const body = (await response.json()) as { data?: T; errors?: Array<{ message: string; type?: string }> };
     if (body.errors?.length) {
       const message = body.errors.map((e) => e.message).join("; ");
@@ -126,19 +129,28 @@ export class GitHubApi {
       }
       if (!body.data) throw new DevError(`GitHub answered: ${message}`);
     }
+    if (!body.data) throw new DevError("GitHub GraphQL returned no data.");
     return body.data as T;
   }
 
-  /** Follows Link headers until `limit` items, so a big account can't stall a command. */
+  /** Follows Link headers until `limit` items, so a big account can't stall a command. Longer lists are cut off there. */
   async list<T>(path: string, limit = 1000): Promise<T[]> {
+    return (await this.listUpTo<T>(path, limit)).items;
+  }
+
+  /** Like list, and says whether the list was cut off, for callers that must not mistake a partial list for the whole. */
+  async listUpTo<T>(path: string, limit: number): Promise<{ items: T[]; truncated: boolean }> {
     const items: T[] = [];
     let url: string | null = `${apiBase()}${path}${path.includes("?") ? "&" : "?"}per_page=100`;
 
+    const visited = new Set<string>();
     while (url && items.length < limit) {
-      const response = await this.fetch(url);
+      if (visited.has(url)) throw new DevError("GitHub returned a repeated pagination URL.");
+      visited.add(url);
+      const response = await this.fetch(providerUrl(url, apiBase()));
       items.push(...((await response.json()) as T[]));
       url = response.headers.get("link")?.match(/<([^>]+)>;\s*rel="next"/)?.[1] ?? null;
     }
-    return items.slice(0, limit);
+    return { items: items.slice(0, limit), truncated: url !== null || items.length > limit };
   }
 }

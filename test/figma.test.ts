@@ -23,7 +23,7 @@ let mcpUrl: string;
 const design = { name: "Login card", color: "blue", mcpName: "Login card", mcpWidth: 320 };
 
 function listen(server: Server): Promise<string> {
-  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)));
+  return new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server.address() as AddressInfo).port}`)); });
 }
 
 before(async () => {
@@ -141,25 +141,13 @@ test("without a token, the local MCP is used, and a frame with another name isn'
   await dev(root, ["figma", "pull", LINK]);
 
   await dev(root, ["figma", "check"]);
-  assert.match(readFileSync(designFile(root), "utf8"), /fingerprintVia: mcp/);
-  assert.doesNotMatch((await dev(root, ["figma", "check"])).out, /Design changed/, "the tool's own advice isn't part of the fingerprint");
-
+  assert.doesNotMatch(readFileSync(designFile(root), "utf8"), /fingerprintVia: mcp/);
+  assert.match((await dev(root, ["figma", "check"])).out, /not checked/);
   design.mcpWidth = 400;
   try {
-    assert.match((await dev(root, ["figma", "check"])).out, /Design changed: Login card/);
-  } finally {
-    design.mcpWidth = 320;
-  }
-
-  design.mcpName = "Something else";
-  try {
-    assert.match(
-      (await dev(root, ["figma", "check"])).out,
-      /1 design not checked, since this file isn't open in Figma desktop:\n {4}Design System: https:\/\/www\.figma\.com\/design\/AbC123xyz\n {6}Login card \(frame 12:34\)\n {2}Open a file in Figma desktop and run "dev figma check"/,
-    );
-  } finally {
-    design.mcpName = "Login card";
-  }
+    assert.doesNotMatch((await dev(root, ["figma", "check"])).out, /Design changed/);
+    assert.doesNotMatch(readFileSync(designFile(root), "utf8"), /fingerprint:/);
+  } finally { design.mcpWidth = 320; }
 
   const offline = await dev(root, ["figma", "check"], { DEV_FIGMA_MCP_URL: "http://127.0.0.1:9/mcp" });
   assert.match(offline.out, /designs not checked for changes\. Log in with a token/);

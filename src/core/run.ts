@@ -11,13 +11,18 @@ export function runVisibly(file: string, args: string[], options: { cwd?: string
 
 /** Clones with git, giving it a token only for this one command, through the environment. */
 export function gitClone(url: string, target: string, token?: string, username = "x-access-token"): Promise<boolean> {
-  if (!token) return runVisibly("git", ["clone", url, target]);
+  // A clone of a big repository can rightly take a long time, so there's no overall timeout;
+  // instead git gives up when the transfer stalls below 1 KB/s for a minute.
+  const stall = ["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60"];
+  if (!token) return runVisibly("git", [...stall, "clone", url, target]);
 
   // An inline credential helper reads the token from the environment, so it never appears
   // in the command line or in the clone's saved config. GitHub expects the username
   // x-access-token; GitLab expects oauth2.
-  const helper = '!f() { echo "username=$DEV_CLONE_USER"; echo "password=$DEV_CLONE_TOKEN"; }; f';
-  return runVisibly("git", ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "clone", url, target], {
-    env: { ...process.env, DEV_CLONE_TOKEN: token, DEV_CLONE_USER: username, GIT_TERMINAL_PROMPT: "0" },
+  const host = new URL(url);
+  if (host.protocol !== "https:" || host.username || host.password) throw new Error("Authenticated clones require an HTTPS URL without embedded credentials.");
+  const helper = '!f() { while IFS= read -r line; do case "$line" in host=*) requested=${line#host=};; esac; done; [ "$requested" = "$DEV_CLONE_HOST" ] || exit 1; echo "username=$DEV_CLONE_USER"; echo "password=$DEV_CLONE_TOKEN"; }; f';
+  return runVisibly("git", [...stall, "-c", "credential.helper=", "-c", `credential.helper=${helper}`, "clone", url, target], {
+    env: { ...process.env, DEV_CLONE_TOKEN: token, DEV_CLONE_USER: username, DEV_CLONE_HOST: host.host, GIT_TERMINAL_PROMPT: "0" },
   });
 }

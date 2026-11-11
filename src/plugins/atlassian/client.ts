@@ -1,6 +1,7 @@
+import { boundedFetch, providerUrl } from "../../core/network.ts";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Credentials } from "../types.ts";
-import { DevError } from "../../core/output.ts";
+import { DevError, NotFound } from "../../core/output.ts";
 
 /**
  * One Atlassian Cloud site, for Jira and Confluence alike: an API token works across
@@ -25,6 +26,7 @@ export function siteFrom(credentials: Credentials): Site {
 
 const MAX_RETRIES = 5;
 const MAX_BACKOFF_MS = 30_000;
+const DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
 let warnedAboutRetry = false;
 
 export class AtlassianClient {
@@ -37,15 +39,15 @@ export class AtlassianClient {
   }
 
   url(pathOrUrl: string): string {
-    return pathOrUrl.startsWith("http") ? pathOrUrl : `${this.site.url}${pathOrUrl}`;
+    return providerUrl(pathOrUrl, this.site.url);
   }
 
-  async request(pathOrUrl: string, accept = "application/json"): Promise<Response> {
+  async request(pathOrUrl: string, accept = "application/json", timeoutMs?: number): Promise<Response> {
     const url = this.url(pathOrUrl);
     for (let attempt = 0; ; attempt++) {
       let response: Response;
       try {
-        response = await fetch(url, { headers: { Authorization: this.auth, Accept: accept } });
+        response = await boundedFetch(url, { headers: { Authorization: this.auth, Accept: accept } }, timeoutMs);
       } catch (error) {
         throw new DevError(`Couldn't reach ${this.site.url}: ${(error as Error).message}.`, "Check your connection and the site address.");
       }
@@ -53,7 +55,7 @@ export class AtlassianClient {
 
       if (response.status === 401) throw new DevError(`${this.site.url} rejected the saved login.`, 'Run "dev login atlassian" again with a new API token.');
       if (response.status === 403) throw new DevError(`Your Atlassian account can't see ${new URL(url).pathname}.`, "Ask for access, or change the scope.");
-      if (response.status === 404) throw new DevError(`Not found on ${this.site.url}: ${new URL(url).pathname}.`);
+      if (response.status === 404) throw new NotFound(`Not found on ${this.site.url}: ${new URL(url).pathname}.`);
 
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable || attempt >= MAX_RETRIES) {
@@ -67,7 +69,7 @@ export class AtlassianClient {
         console.error(`Atlassian is ${response.status === 429 ? "rate limiting" : "having trouble"}; waiting and retrying.`);
       }
       const retryAfter = Number(response.headers.get("retry-after")) * 1000;
-      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : Math.min(MAX_BACKOFF_MS, 500 * 2 ** attempt) + Math.random() * 250);
+      await sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(MAX_BACKOFF_MS, retryAfter) : Math.min(MAX_BACKOFF_MS, 500 * 2 ** attempt) + Math.random() * 250);
     }
   }
 
@@ -76,7 +78,22 @@ export class AtlassianClient {
   }
 
   async download(pathOrUrl: string): Promise<Buffer> {
-    return Buffer.from(await (await this.request(pathOrUrl, "*/*")).arrayBuffer());
+    // The time limit covers reading the body too, so a download gets longer than a request.
+    const response = await this.request(pathOrUrl, "*/*", DOWNLOAD_TIMEOUT_MS);
+    const reader = response.body?.getReader();
+    if (!reader) return Buffer.alloc(0);
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 25 * 1024 * 1024) throw new Error("Attachment exceeds the 25 MiB download limit.");
+        chunks.push(value);
+      }
+    } finally { await reader.cancel().catch(() => {}); }
+    return Buffer.concat(chunks);
   }
 
   browseUrl(key: string): string {

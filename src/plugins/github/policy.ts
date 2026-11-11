@@ -18,7 +18,7 @@ function isRedirection(word: string): boolean {
 }
 
 // Options gh accepts before or after the command that take a value.
-const VALUE_FLAGS = new Set(["-R", "--repo", "--hostname"]);
+const VALUE_FLAGS = new Set(["-R", "--repo", "--hostname", "-b", "--body", "--body-file", "-t", "--title", "-f", "-F", "--field", "--raw-field", "--input", "-X", "--method", "-H", "--header", "--json", "-q", "--jq", "--template"]);
 
 // Read-only subcommands, by top-level command. Anything else under a known command
 // is treated as a change.
@@ -132,12 +132,15 @@ function classifyApi(args: string[]): Call {
     else if (["-f", "-F", "--field", "--raw-field"].includes(arg)) {
       hasFields = true;
       fields.push(value());
+    } else if (/^-[fF].+/.test(arg)) {
+      hasFields = true;
+      fields.push(arg.slice(2));
     } else if (/^--(field|raw-field)=/.test(arg)) {
       hasFields = true;
       fields.push(inline ?? "");
-    } else if (arg === "--input") {
+    } else if (arg === "--input" || arg.startsWith("--input=")) {
       input = true;
-      value();
+      if (arg === "--input") value();
     } else if (["-H", "--header", "-q", "--jq", "-t", "--template", "--cache", "--hostname", "-p", "--preview"].includes(arg)) {
       value();
     } else if (!arg.startsWith("-") && endpoint === null && arg !== "api") {
@@ -150,9 +153,10 @@ function classifyApi(args: string[]): Call {
     if (!query) return { command: "api", kind: "unknown", why: "a GraphQL call whose query can't be seen" };
     const text = query.slice("query=".length);
     if (text.startsWith("@")) return { command: "api", kind: "unknown", why: "a GraphQL query read from a file" };
-    if (/(^|\})\s*mutation\b/.test(text)) {
+    if (/\bmutation\b/.test(text.replace(/#[^\n]*/g, ""))) {
       return { command: "api", kind: "change", why: "a GraphQL mutation" };
     }
+    if (input || !/^\s*(query\b|\{)/.test(text.replace(/#[^\n]*/g, ""))) return { command: "api", kind: "unknown", why: "GraphQL operation cannot be established" };
     return { command: "api", kind: "read", why: "a GraphQL query" };
   }
 

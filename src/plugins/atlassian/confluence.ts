@@ -1,12 +1,15 @@
+import { safePath, atomicWrite } from "../../core/files.ts";
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rename, rm, rmdir } from "node:fs/promises";
 import path from "node:path";
 import { posix } from "node:path";
 import type { Reference, Scope, Service, ServiceContext, SyncReport } from "../types.ts";
 import { renderItem, splitFrontMatter, updateFields, type CommonFields, type Via } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
+import { localLookup } from "../../core/links.ts";
 import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, search as searchPrompt, searchRemote } from "../../core/prompt.ts";
+import { mirrorAttachments } from "./attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { convertStorageToMarkdown } from "./html.ts";
 
@@ -49,7 +52,10 @@ function folder(context: ServiceContext): string {
 async function paginate<T>(api: AtlassianClient, start: string): Promise<T[]> {
   const results: T[] = [];
   let url: string | null = start;
+  const visited = new Set<string>();
   while (url) {
+    if (visited.has(url)) throw new Error("Confluence returned a repeated pagination URL.");
+    visited.add(url);
     const page: { results: T[]; _links?: { next?: string } } = await api.get(url);
     results.push(...page.results);
     url = page._links?.next ?? null;
@@ -85,10 +91,6 @@ async function descendants(api: AtlassianClient, rootId: string): Promise<Descen
 export function pageDirName(title: string, id: string): string {
   const name = title.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 120).replace(/_+$/, "") || "untitled";
   return `${name}-${id}`;
-}
-
-function safeFilename(title: string): string {
-  return title.replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").replace(/\s+/g, " ").trim().slice(0, 150).trim() || "untitled";
 }
 
 /** The page's file, kept exactly as it was if only the sync time would change. */
@@ -146,7 +148,8 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
   const [root, below] = await Promise.all([getPage(api, rootId), options.withChildren ? descendants(api, rootId) : Promise.resolve([])]);
   const space = root.spaceId ? await api.get<{ key: string }>(`/wiki/api/v2/spaces/${root.spaceId}`) : { key: "unknown-space" };
   const rootName = pageDirName(root.title, root.id);
-  const target = path.join(base, space.key, rootName);
+  const target = safePath(base, `${space.key}/${rootName}`);
+  const previousRoot = (await topFolders(context)).find((entry) => entry.data?.id === root.id)?.dir ?? target;
   if (!path.resolve(target).startsWith(path.resolve(base) + path.sep)) throw new Error("Refusing to write outside the confluence folder.");
 
   const stagingRoot = path.join(base, ".staging");
@@ -155,6 +158,11 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
   const staged = path.join(staging, "new");
   await rm(staging, { recursive: true, force: true });
   await mkdir(staged, { recursive: true });
+  if (existsSync(previousRoot)) {
+    // Copy the entire tree, including user notes and departed pages, before changing owned files.
+    for (const relative of await readdir(previousRoot, { recursive: true, encoding: "utf8" })) safePath(previousRoot, relative);
+    await cp(previousRoot, staged, { recursive: true });
+  }
 
   // Folders follow the parent chain, not the API's depth field, so order doesn't matter.
   const children = new Map<string, Descendant[]>();
@@ -176,8 +184,22 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
     else byTitle.set(page.title, page.id);
   }
 
+  // Migrate renamed descendants by stable page id before parallel page writes.
+  for (const [id, relative] of dirs) {
+    if (!relative) continue;
+    const desired = safePath(staged, relative);
+    if (existsSync(path.join(desired, "index.md")) && splitFrontMatter(await readFile(path.join(desired, "index.md"), "utf8")).data?.id === id) continue;
+    for (const name of await readdir(staged, { recursive: true, encoding: "utf8" })) {
+      if (path.basename(name) !== "index.md") continue;
+      const source = path.dirname(path.join(staged, name));
+      if (splitFrontMatter(await readFile(path.join(staged, name), "utf8")).data?.id !== id || source === desired) continue;
+      if (existsSync(desired)) throw new Error("Conflicting Confluence destination; preserve both folders and resolve manually.");
+      await mkdir(path.dirname(desired), { recursive: true });
+      await rename(source, desired);
+      break;
+    }
+  }
   const limitPages = limiter(4);
-  const limitFiles = limiter(4);
   let failed = 0;
 
   await Promise.all(
@@ -186,32 +208,11 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
         const dir = dirs.get(entry.id);
         if (dir === undefined) return;
         try {
-          const pageDir = path.join(staged, dir);
+          const pageDir = dir ? safePath(staged, dir) : staged;
           await mkdir(pageDir, { recursive: true });
           const page = entry.id === root.id ? root : await getPage(api, entry.id);
 
-          const files = new Map<string, string>();
-          if (options.attachments) {
-            const attachments = await paginate<{ title: string; downloadLink: string }>(api, `/wiki/api/v2/pages/${entry.id}/attachments?limit=250`);
-            if (attachments.length > 0) await mkdir(path.join(pageDir, "attachments"), { recursive: true });
-            await Promise.all(
-              attachments.map((attachment) => {
-                const name = safeFilename(attachment.title);
-                files.set(attachment.title, posix.join("attachments", name));
-                return limitFiles(async () => {
-                  const link = attachment.downloadLink.startsWith("http") || attachment.downloadLink.startsWith("/wiki") ? attachment.downloadLink : `/wiki${attachment.downloadLink}`;
-                  try {
-                    await writeFile(path.join(pageDir, "attachments", name), await api.download(link));
-                  } catch (error) {
-                    // The page isn't held back for one file. Its previous copy stays, if there is one.
-                    const previous = path.join(target, dir, "attachments", name);
-                    if (existsSync(previous)) await copyFile(previous, path.join(pageDir, "attachments", name));
-                    warnings.push(`[${entry.title}] Couldn't download "${attachment.title}": ${(error as Error).message}`);
-                  }
-                });
-              }),
-            );
-          }
+          const files = options.attachments ? await syncAttachments(api, entry.id, pageDir, (message) => warnings.push(`[${entry.title}] ${message}`)) : new Map<string, string>();
 
           const { markdown, warnings: conversion } = convertStorageToMarkdown(page.body?.storage?.value ?? "", {
             resolvePageLink(title) {
@@ -223,9 +224,11 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
             jiraBrowseUrl: (key) => api.browseUrl(key),
           });
           for (const warning of conversion) warnings.push(`[${page.title}] ${warning}`);
+          // Links are relative to where the page ends up, not to the staging folder.
+          const body = await context.localize(markdown, path.join(target, dir, "index.md"));
 
           const { content, state } = stableContent(
-            path.join(target, dir, "index.md"),
+            path.join(staged, dir, "index.md"),
             {
               id: page.id,
               title: page.title,
@@ -239,9 +242,9 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
               inScope: options.via === "scope",
               via: options.via,
             },
-            markdown,
+            body,
           );
-          await writeFile(path.join(pageDir, "index.md"), content);
+          await atomicWrite(path.join(pageDir, "index.md"), content);
           if (state !== "unchanged") report[state]++;
         } catch (error) {
           failed++;
@@ -253,11 +256,14 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
 
   try {
     if (failed === 0) {
-      // Pages that were there before but aren't any more count as removed.
-      if (existsSync(target)) {
-        const before = (await readdir(target, { recursive: true, encoding: "utf8" })).filter((f) => path.basename(f) === "index.md").length;
-        const after = (await readdir(staged, { recursive: true, encoding: "utf8" })).filter((f) => path.basename(f) === "index.md").length;
-        report.removed += Math.max(0, before - after - report.added);
+      if (options.withChildren) {
+        const live = new Set(pages.map((page) => page.id));
+        for (const name of await readdir(staged, { recursive: true, encoding: "utf8" })) {
+          if (path.basename(name) !== "index.md") continue;
+          const file = path.join(staged, name);
+          const data = splitFrontMatter(await readFile(file, "utf8")).data;
+          if (data?.service === SERVICE && !live.has(String(data.id)) && await updateFields(file, { inScope: false, via: "former" })) report.removed++;
+        }
       }
       await mkdir(path.dirname(target), { recursive: true });
       const old = path.join(staging, "old");
@@ -269,12 +275,15 @@ async function syncTree(context: ServiceContext, api: AtlassianClient, rootId: s
         if (had) await rename(old, target);
         throw error;
       }
+      if (previousRoot !== target && existsSync(previousRoot)) await rm(previousRoot, { recursive: true });
     } else {
       warnings.push(`${root.title}: ${failed} page${failed === 1 ? "" : "s"} failed, so the previous copy was kept. Run the sync again.`);
     }
   } finally {
-    await rm(staging, { recursive: true, force: true });
-    await rmdir(stagingRoot).catch(() => {});
+    if (!(existsSync(path.join(staging, "old")) && !existsSync(target))) {
+      await rm(staging, { recursive: true, force: true });
+      await rmdir(stagingRoot).catch(() => {});
+    }
   }
 
   return { title: root.title, dir: path.relative(context.root, target), report, warnings };
@@ -302,8 +311,11 @@ async function allRoots(api: AtlassianClient, scope: Scope): Promise<string[]> {
   return ids;
 }
 
+const INDEX: NonNullable<Service["index"]> = { folder: "confluence", title: "Confluence pages" };
+
 function index(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "Confluence pages");
+  if (context.deferIndex) return;
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
 }
 
 /** Top-level page folders: confluence/<SPACE>/<Title-id>, with their front matter. */
@@ -358,6 +370,18 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   return total;
 }
 
+/** Every mirrored page's file, by page id, from the folder names alone. */
+const pageFile = localLookup(async (context) => {
+  const base = folder(context);
+  const files = new Map<string, string>();
+  if (!existsSync(base)) return files;
+  for (const relative of await readdir(base, { recursive: true, encoding: "utf8" })) {
+    const id = path.basename(relative) === "index.md" && !relative.startsWith(".") ? path.basename(path.dirname(relative)).match(/-(\d+)$/)?.[1] : undefined;
+    if (id) files.set(id, path.join(base, relative));
+  }
+  return files;
+});
+
 /** Where a page is already mirrored, if anywhere. */
 async function localPage(context: ServiceContext, id: string): Promise<string | null> {
   const base = folder(context);
@@ -370,14 +394,16 @@ async function localPage(context: ServiceContext, id: string): Promise<string | 
  * Whether a page is inside the scope: a listed page, under one, or in a whole space in it.
  * Only the page's metadata is read to tell, never its content.
  */
-async function withinScope(context: ServiceContext, api: AtlassianClient, id: string): Promise<boolean> {
+/** Whether a page is inside the scope. Pass what's known about the page, and a cache of space keys, to save requests. */
+async function withinScope(context: ServiceContext, api: AtlassianClient, id: string, known?: { spaceId?: string }, spaceKeys = new Map<string, Promise<string>>()): Promise<boolean> {
   if (context.settings.fetch === "anywhere") return true;
   const listed = roots(context.scope);
   if (listed.includes(id)) return true;
-  const page = await api.get<{ spaceId?: string }>(`/wiki/api/v2/pages/${id}`);
+  const page = known ?? (await api.get<{ spaceId?: string }>(`/wiki/api/v2/pages/${id}`));
   if (spaces(context.scope).length > 0 && page.spaceId) {
-    const space = await api.get<{ key: string }>(`/wiki/api/v2/spaces/${page.spaceId}`);
-    if (spaces(context.scope).includes(space.key)) return true;
+    const spaceId = page.spaceId;
+    if (!spaceKeys.has(spaceId)) spaceKeys.set(spaceId, api.get<{ key: string }>(`/wiki/api/v2/spaces/${spaceId}`).then((space) => space.key));
+    if (spaces(context.scope).includes(await spaceKeys.get(spaceId)!)) return true;
   }
   if (listed.length === 0) return false;
   const ancestors = await paginate<{ id: string }>(api, `/wiki/api/v2/pages/${id}/ancestors?limit=250`).catch(() => [] as Array<{ id: string }>);
@@ -406,27 +432,32 @@ async function refresh(context: ServiceContext): Promise<SyncReport> {
   const pages = await localPages(context);
   const byTitle = new Map(pages.map((p) => [String(p.data.title), path.dirname(p.file)]));
   const limit = limiter(4);
+  const spaceKeys = new Map<string, Promise<string>>();
 
   await Promise.all(
     pages.map((local) =>
       limit(async () => {
         const id = String(local.data.id);
         try {
-          const meta = await api.get<{ version?: { number: number } }>(`/wiki/api/v2/pages/${id}`);
+          // One small request tells if the page changed; only changed pages are checked against
+          // the scope and downloaded again.
+          const meta = await api.get<{ spaceId?: string; version?: { number: number } }>(`/wiki/api/v2/pages/${id}`);
           if (meta.version?.number === local.data.version) return;
+          if (!await withinScope(context, api, id, meta, spaceKeys)) return;
           const page = await getPage(api, id);
           const dir = path.dirname(local.file);
+          const files = context.scope.attachments !== false ? await syncAttachments(api, id, dir, (message) => (report.warnings ??= []).push(`[${String(local.data.title)}] ${message}`)) : new Map<string, string>();
           const { markdown } = convertStorageToMarkdown(page.body?.storage?.value ?? "", {
             resolvePageLink(title) {
               const to = byTitle.get(title);
               return to ? posix.join(path.relative(dir, to).split(path.sep).join("/") || ".", "index.md") : null;
             },
-            resolveAttachment: (filename) => (existsSync(path.join(dir, "attachments", safeFilename(filename))) ? posix.join("attachments", safeFilename(filename)) : null),
+            resolveAttachment: (filename) => files.get(filename) ?? null,
             jiraBrowseUrl: (key) => api.browseUrl(key),
           });
-          const { content, state } = stableContent(local.file, { ...(local.data as unknown as CommonFields), title: page.title, updated: page.version?.createdAt ?? String(local.data.updated), synced: new Date().toISOString(), version: page.version?.number ?? 0 }, markdown);
+          const { content, state } = stableContent(local.file, { ...(local.data as unknown as CommonFields), title: page.title, updated: page.version?.createdAt ?? String(local.data.updated), synced: new Date().toISOString(), version: page.version?.number ?? 0 }, await context.localize(markdown, local.file));
           if (state !== "unchanged") {
-            await writeFile(local.file, content);
+            await atomicWrite(local.file, content);
             report.updated++;
           }
         } catch (error) {
@@ -532,12 +563,13 @@ async function chooseScope(context: ServiceContext): Promise<Scope> {
   }
 
   if (ids.length === 0 && whole.length === 0) throw new DevError("Nothing was chosen.");
-  return { ...(whole.length > 0 ? { spaces: whole } : {}), ...(ids.length > 0 ? { roots: ids } : {}) };
+  return { ...(whole.length > 0 ? { spaces: whole } : {}), ...(ids.length > 0 ? { roots: ids } : {}), attachments: true };
 }
 
 export const confluence: Service = {
   id: "confluence",
   title: "Confluence",
+  index: INDEX,
   description: "Specs and docs, one folder per page",
   role: "connected",
 
@@ -583,6 +615,7 @@ export const confluence: Service = {
       if (ids !== undefined && (!Array.isArray(ids) || !ids.every((id) => /^\d+$/.test(String(id))))) {
         return [{ message: '"roots" should be a list of page ids, like [12345, 67890].' }];
       }
+      if (scope.attachments !== undefined && typeof scope.attachments !== "boolean") return [{ message: '"attachments" should be true or false.' }];
       if (keys !== undefined && (!Array.isArray(keys) || !keys.every((key) => typeof key === "string" && /^[A-Za-z0-9~_-]+$/.test(key)))) {
         return [{ message: '"spaces" should be a list of space keys, like [DOCS, ENG].' }];
       }
@@ -616,6 +649,7 @@ export const confluence: Service = {
       index(context);
       return path.join(context.root, result.dir, "index.md");
     },
+    local: (context, reference) => pageFile(context, reference.id),
   },
 
   contribute: {
@@ -634,10 +668,11 @@ export const confluence: Service = {
   commands: [
     {
       name: "pull",
-      description: "Pull one page and everything under it, in scope or not",
+      description: "Pull one page and everything under it, within the configured fetch boundary",
       mark: "read",
+      writes: true,
       arguments: ["<page>"],
-      help: "The page is a link or an id. It stays after later syncs, even outside the scope.",
+      help: "The page is a link or an id, within the configured fetch boundary. It's kept up to date while it stays inside the scope.",
       async run(context, args) {
         const word = args[0] ?? "";
         const id = pageIdFrom(word);
@@ -662,7 +697,13 @@ export const confluence: Service = {
 
 Pages are mirrored one folder per page, following the page tree:
 \`confluence/<SPACE>/<Title-id>/<Child-id>/index.md\`. Links between pages point to the local
-files, and attachments sit in each page's \`attachments/\` folder.
+files, and attachments sit in each page's \`attachments/\` folder (set \`attachments: false\`
+in the scope to leave them out).
+
+Links to tickets, issues and other pages that are in the workspace point to the local
+files; the original address is kept as the link's title. A link that is still a web address
+has no local copy. If it's outside the scope, the page ends with an "Outside the scope"
+section giving the exact command that adds it.
 
 ## Finding pages
 
@@ -691,3 +732,16 @@ Changing the scope, and anything that changes Confluence, is the person's call.`
     ],
   },
 };
+
+/** A page's attachments, by filename, as files relative to its folder. */
+async function syncAttachments(api: AtlassianClient, id: string, dir: string, warn: (message: string) => void): Promise<Map<string, string>> {
+  const attachments = await paginate<{ id?: string; title: string; downloadLink: string; version?: { number: number } }>(api, `/wiki/api/v2/pages/${id}/attachments?limit=250`);
+  const remote = attachments.map((attachment) => ({
+    key: attachment.id ?? attachment.title,
+    title: attachment.title,
+    link: attachment.downloadLink.startsWith("http") || attachment.downloadLink.startsWith("/wiki") ? attachment.downloadLink : `/wiki${attachment.downloadLink}`,
+    version: attachment.version?.number,
+  }));
+  const files = await mirrorAttachments(api, dir, remote, warn, true);
+  return new Map(remote.flatMap((attachment) => (files.has(attachment.key) ? [[attachment.title, files.get(attachment.key)!] as const] : [])));
+}

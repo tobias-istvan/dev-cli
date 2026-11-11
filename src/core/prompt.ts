@@ -12,16 +12,21 @@ function requireTerminal(flag: string): void {
   }
 }
 
+/** Lists longer than this are searched by typing rather than scrolled through. */
+const SHORT_LIST = 8;
+
 export async function choose<T extends string>(message: string, choices: Array<{ value: T; name: string; description?: string }>, flag: string): Promise<T> {
+  if (choices.length > SHORT_LIST) return search(message, choices, flag);
   requireTerminal(flag);
   const { select } = await import("@inquirer/prompts");
   return select({ message, choices });
 }
 
-export async function chooseMany<T extends string>(message: string, choices: Array<{ value: T; name: string; checked?: boolean }>, flag: string): Promise<T[]> {
+/** Choosing several: type to filter, Tab to pick, Enter when done. With `optional`, none is an answer. */
+export async function chooseMany<T extends string>(message: string, choices: Array<{ value: T; name: string; description?: string; checked?: boolean }>, flag: string, optional = false): Promise<T[]> {
   requireTerminal(flag);
-  const { checkbox } = await import("@inquirer/prompts");
-  return checkbox({ message, choices });
+  const { searchMany } = await import("./search-many.ts");
+  return searchMany({ message, choices, rank, optional }) as Promise<T[]>;
 }
 
 /**
@@ -42,24 +47,35 @@ export function fuzzyScore(term: string, text: string): number | null {
       total += 100 + (startOfWord ? 50 : 0) + (at === 0 ? 25 : 0);
       continue;
     }
-    // Letters in order, with gaps: fewer and shorter gaps score higher.
+    // Letters in order, with gaps: fewer and shorter gaps score higher. A gap that lands on
+    // the start of a word is free, so "gh-cli" finds "github-command-line-interface", but
+    // letters scattered across a long name don't match at all.
     let position = -1;
     let gaps = 0;
     for (const letter of word) {
       const next = haystack.indexOf(letter, position + 1);
       if (next === -1) return null;
-      if (position !== -1 && next > position + 1) gaps += next - position - 1;
+      const startOfWord = next === 0 || /[^a-z0-9]/.test(haystack.charAt(next - 1));
+      if (position !== -1 && next > position + 1 && !startOfWord) gaps += next - position - 1;
       position = next;
     }
+    if (gaps > Math.max(4, word.length * 2)) return null;
     total += Math.max(1, 60 - gaps);
   }
   return total;
 }
 
-/** Choices ranked by how well they match, best first. Ties keep their original order. */
+/**
+ * Choices ranked by how well they match, best first. A match in the name beats one that
+ * needs the description. Ties keep their original order.
+ */
 export function rank<T extends { name: string; description?: string }>(term: string, choices: T[]): T[] {
+  const score = (choice: T): number | null => {
+    const name = fuzzyScore(term, choice.name);
+    return name !== null ? name + 1000 : fuzzyScore(term, `${choice.name} ${choice.description ?? ""}`);
+  };
   return choices
-    .map((choice, order) => ({ choice, order, score: fuzzyScore(term, `${choice.name} ${choice.description ?? ""}`) }))
+    .map((choice, order) => ({ choice, order, score: score(choice) }))
     .filter((entry): entry is { choice: T; order: number; score: number } => entry.score !== null)
     .sort((a, b) => b.score - a.score || a.order - b.order)
     .map((entry) => entry.choice);

@@ -70,7 +70,8 @@ export async function runLogin(registry: Registry, out: Output, name: string, op
 
 export async function runLogout(registry: Registry, out: Output, name: string, options: { account?: string }): Promise<void> {
   const plugin = findPlugin(registry, name);
-  const saved = loadCredentials(plugin.name);
+  let saved;
+  try { saved = loadCredentials(plugin.name); } catch {}
 
   if (saved && plugin.login.logout) {
     try {
@@ -80,7 +81,8 @@ export async function runLogout(registry: Registry, out: Output, name: string, o
     }
   }
 
-  const accounts = listAccounts(plugin.name).accounts;
+  let accounts: string[] = [];
+  try { accounts = listAccounts(plugin.name).accounts; } catch {}
   if (!removeCredentials(plugin.name, options.account)) {
     out.info(`There was no saved ${plugin.title} login${options.account ? ` for ${options.account}` : ""}.`);
     return;

@@ -1,3 +1,4 @@
+import { boundedFetch, providerUrl } from "../../core/network.ts";
 import { createHash } from "node:crypto";
 import { DevError } from "../../core/output.ts";
 
@@ -31,7 +32,7 @@ interface NodesResponse {
 async function rest<T>(token: string, path: string): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${apiBase()}${path}`, { headers: { "X-Figma-Token": token } });
+    response = await boundedFetch(providerUrl(`${apiBase()}${path}`, apiBase()), { headers: { "X-Figma-Token": token } });
   } catch (error) {
     throw new DevError(`Couldn't reach Figma: ${(error as Error).message}.`);
   }
@@ -87,7 +88,7 @@ function parseMessage(text: string): Record<string, unknown> | null {
 }
 
 async function post(body: Record<string, unknown>): Promise<Record<string, unknown> | null> {
-  const response = await fetch(mcpUrl(), {
+  const response = await boundedFetch(mcpUrl(), {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(session ? { "Mcp-Session-Id": session } : {}) },
     body: JSON.stringify(body),

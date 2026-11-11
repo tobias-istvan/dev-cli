@@ -54,6 +54,10 @@ export interface ServiceSettings {
 }
 
 export interface ServiceContext extends PluginContext {
+  /** Core batches mirror writes and rebuilds the index once at the end. */
+  deferIndex?: boolean;
+  /** Files fetched during this command, avoiding duplicate task-context requests. */
+  fetched?: Map<string, string>;
   root: string;
   settings: ServiceSettings;
   /** This service's folder, like <root>/jira. Versioning services have none. */
@@ -66,7 +70,13 @@ export interface ServiceContext extends PluginContext {
    * PR's title, and fetches the ones not already in the workspace. Returns each with its
    * file relative to the workspace root, when it could be fetched.
    */
-  references(text: string): Promise<Array<{ reference: Reference; file: string | null; outside?: boolean }>>;
+  references(text: string): Promise<Array<{ reference: Reference; file: string | null; outside?: boolean; command?: string }>>;
+  /**
+   * An item's body with its links pointed at local copies, wherever they lead to something
+   * an enabled service has in the workspace. `file` is where the item will be written.
+   * Nothing is fetched. Call it on a body before writing it.
+   */
+  localize(body: string, file: string): Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +164,8 @@ export interface SyncReport {
   removed: number;
   /** Items that failed. A failure never stops the rest of the run. */
   failed: Array<{ id: string; reason: string }>;
+  /** Things the person should know that didn't fail the sync, like a list cut off at its limit. */
+  warnings?: string[];
 }
 
 export interface Reference {
@@ -161,6 +173,8 @@ export interface Reference {
   service: string;
   id: string;
   url?: string;
+  /** Recognised by its shape alone, so it may not be a reference at all. Never reported as outside the scope. */
+  uncertain?: boolean;
 }
 
 export interface LinkCapability {
@@ -172,6 +186,11 @@ export interface LinkCapability {
   find(text: string, context: ServiceContext): Reference[];
   /** Fetches one referenced item into the service's folder, and returns its file. */
   fetch(context: ServiceContext, reference: Reference): Promise<string>;
+  /**
+   * The referenced item's file, if it's already in the workspace. Must be quick and local.
+   * With it, links to the item in other mirrored files become links to this file.
+   */
+  local?(context: ServiceContext, reference: Reference): Promise<string | null>;
 }
 
 export interface Contributions {
@@ -209,6 +228,8 @@ export interface ServiceCommand {
   name: string;
   description: string;
   mark: Mark;
+  /** Whether it writes workspace files, given its options. Those take the sync lock, so they never overlap a sync. */
+  writes?: boolean | ((options: Record<string, unknown>) => boolean);
   /** Commander syntax, like "<id>" or "[ids...]". */
   arguments?: string[];
   options?: CommandOption[];

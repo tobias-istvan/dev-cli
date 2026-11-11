@@ -1,3 +1,4 @@
+import { taskId } from "../src/core/tasks.ts";
 /** GitLab: versioning, merge requests to review and issues, against a fake GitLab server. */
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
@@ -38,7 +39,7 @@ before(async () => {
     if (p === "/projects/team%2Fweb/issues/5") return json(200, issue);
     return json(404, { message: "404 Not Found" });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   host = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const seed = path.join(base, "seed");
@@ -110,7 +111,7 @@ test("GitLab issues sync like any task source", async () => {
   assert.match(text, /mine: true\ndue: 2026-11-20\ninScope: true/);
   assert.ok(existsSync(path.join(root, "notes", "N-2.md")), "the sweep follows the issue's references");
   assert.match((await dev(root, ["task", "list", "--mine"])).out, /GitLab Issues, as of .*: 1 task\n {2}team\/web#5 {2}\[open\] {2}Broken login/);
-  assert.match((await dev(root, ["task", "start", "team/web#5"])).out, /on fix\/team-web-5-broken-login/);
+  assert.ok((await dev(root, ["task", "start", "team/web#5"])).out.includes(`on fix/${taskId("gitlab-issues:team/web#5")}-broken-login`));
 });
 
 test("glab commands are checked like gh's", () => {

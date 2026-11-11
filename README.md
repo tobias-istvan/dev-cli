@@ -385,7 +385,13 @@ mistaken for a GitLab issue.
 ### Jira (`atlassian:jira`)
 
 A task source. Each ticket goes in `jira/<KEY>/ticket.md`: description, acceptance criteria,
-relations, attachments and comments. Your own files can sit beside it.
+relations, attachments and comments. Attachments are downloaded into the ticket's
+`attachments/` folder, and images in the text point to them; set `attachments: false` in the
+scope to leave them out. Your own files can sit beside it.
+
+The search decides what the work is. `dev jira scope add <project, ticket or link>` lets
+tickets in another project be fetched when something links to them, without making them
+work.
 
 ```yaml
 scope:
@@ -397,14 +403,15 @@ scope:
 - The **parents** of open tickets are fetched too, since specs often live on the parent story.
   They're marked `via: parent`.
 - Tickets assigned to you are marked `mine: true`.
-- `dev jira pull <KEY>` fetches any ticket on demand.
-- `dev jira scope` lets you pick a project, then "mine", "all open" or your own JQL.
+- `dev jira pull <KEY>` fetches a ticket within the configured project boundary. With a JQL-only scope, the boundary is the projects of the tickets the search returns, so run `dev sync jira` first.
+- `dev jira scope --choose` lets you pick a project, then "mine", "all open" or your own JQL.
 
 ### Confluence (`atlassian:confluence`)
 
 A reference source. Pages are mirrored one folder per page, following the tree:
 `confluence/<SPACE>/<Title-id>/<Child-id>/index.md`, with attachments beside each page and
-links between pages pointing at the local files.
+links between pages pointing at the local files. Set `attachments: false` in the scope to
+leave attachments out.
 
 ```yaml
 scope:
@@ -414,7 +421,7 @@ scope:
 
 - A tree downloads into a staging folder and replaces the old copy only once every page
   succeeded, so a failure or a killed sync never loses pages.
-- `dev confluence scope` picks spaces, then whole spaces or pages found by searching their
+- `dev confluence scope --choose` picks spaces, then whole spaces or pages found by searching their
   titles. `dev confluence scope add <link or id>` adds one page; short `/wiki/x/…` links work.
 - `dev confluence pull <link or id>` fetches a page and its tree, within the scope.
 
@@ -446,10 +453,9 @@ at. Agents read designs there, never from the web link.
 it changed:
 
 - **With a token**, through Figma's REST API: any file, without the desktop app.
-- **Without one**, through the local MCP server, while Figma desktop is running. That server
-  reads whichever file is open and can't say which, so a frame only counts when its name
-  matches the one recorded before. Frames in files that aren't open are listed by file, with a
-  link to open it.
+- **Without one**, the local MCP can inspect the open design, but cannot establish its file
+  identity. Checks are reported as unverified and never update change-detection baselines.
+  Use a token for verified change detection.
 
 The first check is a baseline. After that, `Design changed: <frame>` appears in the sync,
 `changed:` in the file, and the snapshot lists designs that changed in the last week.
@@ -498,10 +504,25 @@ like its space or its parents, never its content. Links outside are listed:
 Confluence: 1 linked item is outside the scope, so not fetched:
   https://acme.atlassian.net/wiki/spaces/OPS/pages/831193102/Runbook
     linked from ABC-12, ABC-15
-  To include one: dev confluence scope add <link>. Or set "fetch: anywhere" for confluence in dev.yaml.
+    to fetch it: dev confluence scope add https://acme.atlassian.net/wiki/spaces/OPS/pages/831193102/Runbook
+  Then run "dev sync confluence". Or set "fetch: anywhere" for confluence in dev.yaml to follow every link.
 ```
 
-Briefs and pull request files list them the same way. This limits what dev fetches, not what
+Briefs and pull request files list them the same way, and a mirrored file that links to one
+ends with an "Outside the scope" section giving the same command.
+
+### Local links
+
+A sync follows the links in open tasks, open PRs and everything in a scope, and fetches what
+they point to, within each service's scope. Then it points the links in every mirrored file
+at the local copies, whichever service they lead to:
+
+```markdown
+[the spec](../../confluence/DOCS/Spec-831193102/index.md "https://acme.atlassian.net/wiki/spaces/DOCS/pages/831193102/Spec")
+```
+
+The original address stays as the link's title. A link that is still a web address has no
+local copy. Links inside items that were themselves fetched as links aren't followed further. This limits what dev fetches, not what
 the token could reach.
 
 ### One sync at a time
@@ -552,7 +573,7 @@ dev task cleanup --remove     # remove the safe ones
 ```
 
 A worktree is **safe to remove** when nothing would be lost: no uncommitted changes, and every
-commit already in the default branch or on the branch's own upstream. `tasks/<id>/` is never
+commit already in the default branch or on a freshly fetched remote upstream. `tasks/<id>/` is never
 removed.
 
 ## Reviewing pull and merge requests
@@ -704,7 +725,7 @@ anything.
 | `dev logout <plugin>` | Remove a saved login. `--account <name>` for one account |
 | `dev add <service>` | Enable a service. `--scope <yaml>` instead of choosing |
 | `dev remove <service>` | Disable a service. `--delete-files` to delete its folder too |
-| `dev <service> scope` | Show what a service syncs, or choose it again at a terminal. `--set <yaml>` |
+| `dev <service> scope` | Show what a service syncs. `--choose` opens the picker; `--set <yaml>` changes it directly |
 | `dev <service> scope add\|remove <items...>` | Change a list-shaped scope by link or id: Confluence pages, Notion pages, repositories, boards, Figma files |
 | `dev doctor` | Check everything, with a fix for each problem. `--offline` skips login checks |
 | `dev files` | Update the generated agent files, leaving hand-edited ones alone |
@@ -732,7 +753,7 @@ anything.
 | `dev github pr <numbers...>` | Pull PRs. `--worktree` checks each out on its branch |
 | `dev gitlab mrs` | MRs to review. `--no-pull`, `--include-drafts`, `--include-own` |
 | `dev gitlab mr <numbers...>` | Pull MRs. `--worktree` |
-| `dev jira pull <keys...>` | Fetch tickets, in scope or not |
+| `dev jira pull <keys...>` | Fetch tickets within the configured project boundary |
 | `dev confluence pull <page>` | Fetch a page and its tree, within the scope |
 | `dev github-issues pull <issues...>` | Fetch issues: `owner/repo#N`, a link, or a number |
 | `dev gitlab-issues pull <issues...>` | The same for GitLab |
@@ -784,7 +805,7 @@ Names ending in `_URL` are settings, never credentials.
 | `dev: permission denied` after rebuilding from source | Run `npm run build` again: it marks the command executable |
 | "This needs an answer, and there's no terminal to ask in" | Pass the flag it names instead |
 | A Confluence sync reports failed pages | Run it again. The old copy stays until every page in the tree succeeds |
-| "A sync is already running" | `dev day status` says which, and since when. A killed one is cleared on its own |
+| "A sync is already running" | `dev day status` says which, and since when. A killed one's lock is taken over by the next sync; only an unreadable lock needs `dev sync --recover` |
 | Linked items "outside the scope, so not fetched" | `dev <service> scope add <link>`, or set `fetch: anywhere` for that service |
 | GitHub Projects: "can't read projects" | `gh auth refresh -s read:project`, or a token with that scope |
 | Notion: "can't find that page" | Connect the integration to the page: its ... menu > Connections |
@@ -852,3 +873,22 @@ Built-in plugins are registered in `src/plugins/registry.ts`.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+The next sync takes over a lock left by a dead process; an unreadable lock needs `dev sync --recover`. Status checks never delete a lock. Bare `dev <service> scope` only displays the scope; use `--choose` for the interactive picker.
+
+### Release verification
+
+`npm run typecheck` checks both source and tests. `npm run test:package` builds a tarball,
+installs it in a temporary folder, and verifies the installed CLI and workspace templates.
+CI runs the checks on Linux and macOS, including Node 22.13. The development/test commands
+explicitly enable Node's TypeScript stripping for older supported runtimes.
+
+Transcripts are exported only when a session hook recorded matching provenance on this
+machine. That local provenance is stored outside the workspace, so a committed session
+reference alone cannot request another local transcript. Rewriting history or cloning a
+workspace does not import another machine's transcript-export permission.
+
+Task names transformed into folder names include a short identity hash; issue task IDs
+also include their source service. Use the worktree/notes paths printed by `dev task start`.
+For ambiguous issue references, prefix the service, for example
+`dev task start github-issues:acme/web#42`.

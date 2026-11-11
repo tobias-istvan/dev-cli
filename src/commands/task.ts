@@ -1,3 +1,4 @@
+import { withRefresh } from "../core/refresh.ts";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { Registry } from "../plugins/registry.ts";
@@ -6,14 +7,16 @@ import { workspaceServiceContext } from "../core/context.ts";
 import { DevError } from "../core/output.ts";
 import { loadConfig, type ProjectConfig } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
-import { taskDir, taskId, writeTaskNotes } from "../core/tasks.ts";
+import { legacyTaskId, taskDir, taskId, writeTaskNotes } from "../core/tasks.ts";
 import {
   branchName,
   copyLocalFiles,
   DEFAULT_BRANCH_PATTERN,
   defaultBranch,
   ensureWorktree,
+  fetchRemote,
   inspectWorktree,
+  inspectWorktrees,
   isSafeToRemove,
   removeWorktree,
   requireClone,
@@ -31,30 +34,59 @@ export interface StartOptions {
 
 /** The first enabled service that recognises the whole reference, with what it knows. */
 async function resolve(root: string, config: ProjectConfig, registry: Registry, ref: string, out: Output): Promise<{ entry: ServiceEntry; reference: Reference; context: TaskContext } | null> {
-  for (const entry of enabledServices(config, registry)) {
-    const links = entry.service.links;
+  const entries = enabledServices(config, registry);
+  const candidates: Array<{ entry: ServiceEntry; reference: Reference; local?: TaskItem }> = [];
+  for (const entry of entries) {
+    const prefix = `${entry.service.id}:`;
+    const word = ref.startsWith(prefix) ? ref.slice(prefix.length) : ref;
     const context = workspaceServiceContext(root, entry, config, registry, out);
-    const reference = links?.find(ref, context).find((r) => r.id === ref || r.url === ref);
-    if (!links || !reference) continue;
-
-    const file = await links.fetch(context, reference);
-    const task = entry.service.contribute?.taskStart
-      ? await entry.service.contribute.taskStart(context, reference)
-      : { title: reference.id, files: [path.relative(root, file)], references: [] };
-
-    // One step further: what the item links to, like a parent's spec.
-    for (const next of task.references) {
-      const owner = enabledServices(config, registry).find((e) => e.key === next.service);
-      if (!owner?.service.links) continue;
-      try {
-        task.files.push(path.relative(root, await owner.service.links.fetch(workspaceServiceContext(root, owner, config, registry, out), next)));
-      } catch (error) {
-        out.warn(`Couldn't fetch ${next.id} from ${owner.service.title}: ${(error as Error).message}`);
+    const numeric = /^#?\d+$/.test(word) && config.versioning?.service.split(":")[0] === entry.plugin.name;
+    const expanded = numeric ? `${config.versioning!.repo}#${word.replace("#", "")}` : word;
+    const reference = entry.service.links?.find(expanded, context).find((r) => r.id === expanded || r.url === expanded);
+    if (reference) candidates.push({ entry, reference });
+    else if (entry.service.tasks) {
+      for (const local of await entry.service.tasks.list(context)) {
+        if (local.id === word) candidates.push({ entry, reference: { id: local.id, service: entry.key }, local });
       }
     }
-    return { entry, reference, context: task };
   }
-  return null;
+  const explicit = candidates.filter((candidate) => ref.startsWith(`${candidate.entry.service.id}:`));
+  const choices = explicit.length ? explicit : candidates;
+  const providers = new Set(choices.map((candidate) => candidate.entry.plugin.name));
+  if (providers.size > 1) throw new DevError("That reference matches several services.", "Prefix it with the service, like github-issues:owner/repo#42.");
+  if (!choices.length) return null;
+  const chosen = choices.find((candidate) => candidate.entry.service.links) ?? choices[0]!;
+  const { entry, reference, local } = chosen;
+  const context = workspaceServiceContext(root, entry, config, registry, out);
+  const links = entry.service.links;
+  if (local && !links) {
+    const files = choices.flatMap((candidate) => candidate.local ? [candidate.local.file] : []);
+    const text = await (await import("node:fs/promises")).readFile(path.join(root, local.file), "utf8");
+    const notFetched: string[] = [];
+    for (const found of await context.references(text)) {
+      if (found.file) files.push(found.file);
+      else if (found.outside) notFetched.push(found.reference.url ?? found.reference.id);
+    }
+    return { entry, reference, context: { title: local.title, files, references: [], notFetched } };
+  }
+  if (!links) return null;
+  const file = await links.fetch(context, reference);
+  const task = entry.service.contribute?.taskStart
+    ? await entry.service.contribute.taskStart(context, reference)
+    : { title: reference.id, files: [path.relative(root, file!)], references: [] };
+
+  // One step further: what the item links to, like a parent's spec.
+  for (const next of task.references) {
+    const owner = enabledServices(config, registry).find((e) => e.key === next.service);
+    if (!owner?.service.links) continue;
+    try {
+      task.files.push(path.relative(root, await owner.service.links.fetch(workspaceServiceContext(root, owner, config, registry, out), next)));
+    } catch (error) {
+      out.warn(`Couldn't fetch ${next.id} from ${owner.service.title}: ${(error as Error).message}`);
+    }
+  }
+  task.files.push(...choices.flatMap((candidate) => candidate.local ? [candidate.local.file] : []));
+  return { entry, reference, context: task };
 }
 
 export async function runTaskStart(registry: Registry, out: Output, ref: string, options: StartOptions): Promise<void> {
@@ -63,7 +95,9 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   const repo = requireClone(root);
 
   const resolved = await resolve(root, config, registry, ref, out);
-  const id = taskId(resolved?.reference.id ?? ref);
+  const legacy = legacyTaskId(resolved?.reference.id ?? ref);
+  const resumable = legacy !== null && (existsSync(worktreeDir(root, legacy)) || existsSync(taskDir(root, legacy)));
+  const id = resumable ? legacy : taskId(resolved && /[/#]/.test(resolved.reference.id) ? `${resolved.entry.service.id}:${resolved.reference.id}` : resolved?.reference.id ?? ref);
   const title = options.title ?? resolved?.context.title ?? ref;
   const type = options.type ?? resolved?.context.type ?? "feature";
 
@@ -107,8 +141,10 @@ export async function runTaskStatus(out: Output, id?: string): Promise<void> {
     out.info('No tasks in flight. Start one with "dev task start <ref>".');
     return;
   }
-  for (const each of ids) {
-    const state = await inspectWorktree(root, each, base);
+  const { states, broken } = await inspectWorktrees(root, base);
+  for (const { id: each, reason } of broken) out.warn(`${each}  can't be read: ${reason}`);
+  for (const state of states) {
+    const each = state.id;
     const parts = [`${state.unmerged.length} commit${state.unmerged.length === 1 ? "" : "s"}`, `${state.dirty.length} uncommitted`];
     if (state.behind > 0) parts.push(`${state.behind} behind ${base}`);
     out.info(`${each}  ${state.branch}  ${parts.join(", ")}`);
@@ -118,16 +154,20 @@ export async function runTaskStatus(out: Output, id?: string): Promise<void> {
 export async function runTaskCleanup(out: Output, options: { remove?: boolean }): Promise<void> {
   const root = requireWorkspaceRoot();
   const base = await defaultBranch(requireClone(root));
-  const states = await Promise.all((await worktreeIds(root)).map((id) => inspectWorktree(root, id, base)));
-  const safe = states.filter(isSafeToRemove);
-  const kept = states.filter((s) => !isSafeToRemove(s));
+  const remote = await fetchRemote(requireClone(root));
+  const fetched = remote === "fetched";
+  if (remote === "unreachable") out.warn("Couldn't reach the repository's remote, so only worktrees whose commits are all in the base count as safe.");
+  const { states, broken } = await inspectWorktrees(root, base);
+  const safe = states.filter((s) => isSafeToRemove(s, { trustUpstream: fetched }));
+  const kept = states.filter((s) => !isSafeToRemove(s, { trustUpstream: fetched }));
+  for (const { id, reason } of broken) out.warn(`Keep ${id}: git can't read it (${reason}).`);
 
-  if (states.length === 0) {
+  if (states.length === 0 && broken.length === 0) {
     out.info("No worktrees.");
     return;
   }
   for (const state of kept) {
-    const reasons = [state.unmerged.length > 0 ? `${state.unmerged.length} commit(s) not in ${base}` : "", state.dirty.length > 0 ? `${state.dirty.length} uncommitted change(s)` : ""].filter(Boolean);
+    const reasons = [state.unmerged.length > 0 ? `${state.unmerged.length} commit(s) not in ${base}${!fetched && state.unpushed?.length === 0 ? " (pushed, but the remote couldn't be checked)" : ""}` : "", state.dirty.length > 0 ? `${state.dirty.length} uncommitted change(s)` : ""].filter(Boolean);
     out.info(`Keep ${state.id}: ${reasons.join(", ")}.`);
   }
   if (safe.length === 0) {
@@ -139,8 +179,14 @@ export async function runTaskCleanup(out: Output, options: { remove?: boolean })
     return;
   }
   for (const state of safe) {
-    await removeWorktree(root, state);
-    out.info(`Removed worktrees/${state.id}. Its notes in tasks/${state.id}/ stay.`);
+    try {
+      const note = await removeWorktree(root, state, { fetched });
+      out.info(`Removed worktrees/${state.id}. Its notes in tasks/${state.id}/ stay.`);
+      if (note) out.warn(`  ${note}`);
+    } catch (error) {
+      process.exitCode = 1;
+      out.warn(`Kept ${state.id}: ${(error as Error).message}`);
+    }
   }
 }
 
@@ -166,7 +212,8 @@ export async function runTaskList(registry: Registry, out: Output, options: List
 
   if (options.refresh) {
     const { syncServices } = await import("./sync.ts");
-    await syncServices(root, config, registry, out, sources);
+    const refreshOut: Output = options.json ? { info: (s) => console.error(s), warn: (s) => console.error(s) } : out;
+    if (!await withRefresh(root, "dev task list --refresh", () => syncServices(root, config, registry, refreshOut, sources))) process.exitCode = 1;
   }
 
   const groups: Array<{ title: string; tasks: TaskItem[]; asOf: string | null }> = [];
@@ -176,7 +223,9 @@ export async function runTaskList(registry: Registry, out: Output, options: List
       .filter((task) => options.all || !task.done)
       .filter((task) => (options.mine ? task.mine : options.all || task.inScope || task.mine))
       .sort((a, b) => Number(b.mine) - Number(a.mine) || (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.id.localeCompare(b.id, undefined, { numeric: true }));
-    const asOf = all.map((task) => task.synced ?? "").sort().at(-1) || null;
+    let asOf: string | null = null;
+    try { asOf = JSON.parse((await import("node:fs")).readFileSync(path.join(root, ".dev/state/sync-times", `${entry.service.id}.json`), "utf8")).completed; } catch {}
+    asOf ??= all.map((task) => task.synced ?? "").sort().at(-1) || null;
     groups.push({ title: entry.service.title, tasks, asOf });
   }
 

@@ -1,7 +1,7 @@
 /** Syncing, the day, sessions, hooks and the command check. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -266,13 +266,24 @@ test("a running refresh is marked, so others can tell, and a killed one is notic
   assert.equal(second.code, 1);
   assert.match(second.err, /A sync is already running/);
   assert.equal(dev(root, ["day", "start", "--no-sync"]).code, 0, "rewriting the snapshot from disk is still fine");
+  assert.equal(dev(root, ["notes", "list"]).code, 0, "a command that writes no workspace files runs alongside a sync");
+  const waited = dev(root, ["notes", "post", "hi"], { env: { DEV_SYNC_WAIT: "1" } });
+  assert.match(waited.err, /Waiting for a running sync to finish: dev sync jira/, "one that writes them waits its turn");
+  assert.match(waited.err, /A sync is already running/, "and gives up when the sync outlasts the wait");
 
   const start = dev(root, ["hook", "session-start", "--tool", "claude"], { input: { session_id: SESSION, cwd: root }, env: { CLAUDE_PROJECT_DIR: root } });
   assert.match(JSON.parse(start.out).hookSpecificOutput.additionalContext, /A sync is running: dev sync jira, since \d\d:\d\d.*dev day status/);
 
   writeFileSync(marker, JSON.stringify({ pid: 2147483646, started: "2026-11-09T02:46:00.000Z", command: "dev day start" }));
   assert.match(dev(root, ["day", "status"]).out, /dev day start, started at \d\d:\d\d, stopped before finishing[\s\S]*No sync is running/);
-  assert.ok(!existsSync(marker), "the stale marker is cleared");
+  assert.ok(existsSync(marker), "status reads never remove a stale marker");
+  assert.equal(dev(root, ["sync"]).code, 0, "the next sync takes over a dead process's marker");
+  assert.ok(!existsSync(marker));
+
+  writeFileSync(marker, "{ half-written");
+  utimesSync(marker, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+  assert.match(dev(root, ["sync"]).err, /unreadable lock/, "a marker with no known owner is left for the person");
+  assert.equal(dev(root, ["sync", "--recover"]).code, 0);
 
   assert.equal(dev(root, ["day", "start"]).code, 0);
   assert.equal(dev(root, ["sync"]).code, 0);

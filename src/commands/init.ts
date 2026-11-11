@@ -93,9 +93,10 @@ async function pickServices(registry: Registry, config: ProjectConfig, flags: st
     return [];
   }
   const keys = await chooseMany(
-    "Which other services does the team use? Space to select, Enter when done.",
+    "Which other services does the team use? Type to filter, Tab to pick, Enter when done, or straight away for none.",
     available.map((e) => ({ value: e.key, name: `${e.service.title}: ${e.service.description}` })),
     "--service <service>",
+    true,
   );
   return keys.map((key) => resolveService(registry, key, "connected"));
 }

@@ -285,7 +285,7 @@ export function classifiers(registry: Registry): Map<string, Classifier> {
     const entry = first ? registry.service(first) : undefined;
     if (entry && second === "scope") {
       // Showing the scope only reads; changing it is the person's call.
-      if (!third && !args.includes("--set")) return { command: `dev ${entry.service.id} scope`, kind: "read", why: "shows the scope" };
+      if (!third && !args.some((arg) => arg === "--set" || arg.startsWith("--set=") || arg === "--choose")) return { command: `dev ${entry.service.id} scope`, kind: "read", why: "shows the scope" };
       return { command: `dev ${entry.service.id} scope`, kind: "config", why: `changes what ${entry.service.title} syncs` };
     }
     const definition = entry?.service.commands?.find((c) => c.name === second);

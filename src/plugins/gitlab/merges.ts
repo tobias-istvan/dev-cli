@@ -1,7 +1,9 @@
+import { reviewCurrent } from "../../core/reviews.ts";
+import { atomicWrite } from "../../core/files.ts";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ServiceContext, SyncReport } from "../types.ts";
+import type { Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
@@ -72,8 +74,10 @@ async function frontMatter(dir: string): Promise<Record<string, unknown> | null>
   }
 }
 
+export const INDEX: NonNullable<Service["index"]> = { folder: FOLDER, title: "Merge requests under review", include: (f) => path.posix.basename(f) === DESCRIPTION };
+
 export function indexMerges(context: ServiceContext): void {
-  if (existsSync(folder(context))) buildIndex(folder(context), "Merge requests under review", (f) => path.posix.basename(f) === DESCRIPTION);
+  if (existsSync(folder(context))) buildIndex(folder(context), INDEX.title, INDEX.include);
 }
 
 /** Pulls one merge request. review.md is the reviewer's, and is never touched. */
@@ -81,7 +85,7 @@ export async function pullMerge(context: ServiceContext, api: GitLabApi, repo: s
   const base = `/projects/${projectId(repo)}/merge_requests/${iid}`;
   const [mr, diffs, notes] = await Promise.all([
     api.get<Detail>(base),
-    api.list<{ new_path: string; new_file?: boolean; deleted_file?: boolean }>(`${base}/diffs`, 3000).catch(() => []),
+    api.listUpTo<{ new_path: string; new_file?: boolean; deleted_file?: boolean }>(`${base}/diffs`, 3000),
     api.list<Note>(`${base}/notes?sort=asc`),
   ]);
   const comments = notes.filter((n) => !n.system && (n.body ?? "").trim());
@@ -91,11 +95,13 @@ export async function pullMerge(context: ServiceContext, api: GitLabApi, repo: s
   const linkLines = references.map((r) =>
     r.file
       ? `- ${r.reference.id}: [${r.file.split(path.sep).join("/")}](${path.posix.relative(`${FOLDER}/${iid}`, r.file.split(path.sep).join("/"))})`
-      : `- ${r.reference.url ?? r.reference.id} (${r.outside ? "outside the scope, not fetched" : "not fetched"})`,
+      : `- ${r.reference.url ?? r.reference.id} (${r.outside ? `outside the scope, not fetched${r.command ? `. To fetch it: \`${r.command}\`` : ""}` : "not fetched"})`,
   );
 
   const dir = path.join(folder(context), String(iid));
   await mkdir(dir, { recursive: true });
+  const previous = await frontMatter(dir);
+  if (previous) reviewCurrent(context.root, `mr-${iid}`, path.join(dir, REVIEW), String(previous.updated));
   await writeItem(
     path.join(dir, DESCRIPTION),
     {
@@ -126,7 +132,8 @@ export async function pullMerge(context: ServiceContext, api: GitLabApi, repo: s
       "",
       "## Changed files",
       "",
-      ...diffs.map((d) => `- \`${d.new_path}\`${d.new_file ? " (new)" : d.deleted_file ? " (deleted)" : ""}`),
+      ...diffs.items.map((d) => `- \`${d.new_path}\`${d.new_file ? " (new)" : d.deleted_file ? " (deleted)" : ""}`),
+      ...(diffs.truncated ? ["", `_Only the first ${diffs.items.length} files are listed; the diff has the rest._`] : []),
       "",
       `Read the diff with \`glab mr diff ${iid}\`. Write your review in review.md in this folder.`,
     ].join("\n"),
@@ -140,7 +147,7 @@ export async function pullMerge(context: ServiceContext, api: GitLabApi, repo: s
           return `### ${n.author?.username ?? "unknown"} · ${(n.created_at ?? "").slice(0, 16).replace("T", " ")}${where}\n\n${(n.body ?? "").trim()}`;
         })
         .join("\n\n");
-  await writeFile(path.join(dir, "comments.md"), `# MR !${iid}: comments\n\n${body}\n`);
+  await atomicWrite(path.join(dir, "comments.md"), `# MR !${iid}: comments\n\n${body}\n`);
   return { comments: comments.length, links, head: mr.source_branch, fork: mr.source_project_id !== undefined && mr.source_project_id !== mr.target_project_id };
 }
 
@@ -178,7 +185,7 @@ export async function pollMerges(context: ServiceContext, options: { pull: boole
     if (!options.includeDrafts && (mr.draft || mr.work_in_progress)) continue;
     const dir = path.join(folder(context), String(mr.iid));
     const data = await frontMatter(dir);
-    const state: ReviewState = !data ? "new" : data.updated !== mr.updated_at ? "updated" : existsSync(path.join(dir, REVIEW)) ? "current" : "unreviewed";
+    const state: ReviewState = !data ? "new" : data.updated !== mr.updated_at ? "updated" : reviewCurrent(context.root, `mr-${mr.iid}`, path.join(dir, REVIEW), String(data.updated)) ? "current" : "unreviewed";
     considered.push({ number: mr.iid, title: mr.title, author: mr.author.username, state });
   }
 
@@ -204,7 +211,7 @@ export async function waitingForReview(context: ServiceContext): Promise<Array<{
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     const dir = path.join(folder(context), entry.name);
     const data = await frontMatter(dir);
-    if (!data || data.status === "merged" || data.status === "closed" || existsSync(path.join(dir, REVIEW))) continue;
+    if (!data || data.status === "merged" || data.status === "closed" || reviewCurrent(context.root, `mr-${entry.name}`, path.join(dir, REVIEW), String(data.updated))) continue;
     waiting.push({ number: Number(entry.name), title: String(data.title ?? ""), author: String(data.author ?? "") });
   }
   return waiting.sort((a, b) => a.number - b.number);

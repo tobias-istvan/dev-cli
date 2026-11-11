@@ -5,7 +5,7 @@ import { ask, secret } from "../../core/prompt.ts";
 import { gitClone } from "../../core/run.ts";
 import { GitLabApi, serverFrom } from "./api.ts";
 import { gitlabIssues } from "./issues.ts";
-import { DESCRIPTION, FOLDER, indexMerges, pollMerges, pullMerge, waitingForReview } from "./merges.ts";
+import { DESCRIPTION, FOLDER, INDEX as MERGES_INDEX, indexMerges, pollMerges, pullMerge, waitingForReview } from "./merges.ts";
 import { glabPolicy } from "./policy.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { reviewWorktree } from "../../core/worktree.ts";
@@ -91,10 +91,10 @@ const gitlab: Plugin = {
           const source = url ?? `${server.host}/${repository}.git`;
           context.out.info(`Cloning ${source} into ${path.basename(target)}/`);
           // Over SSH, git uses the person's own keys. Over HTTPS, this login's token, for this clone only.
-          return gitClone(source, target, source.startsWith("http") ? server.token : undefined, "oauth2");
+          return gitClone(source, target, source.startsWith("https:") && new URL(source).origin === new URL(server.host).origin ? server.token : undefined, "oauth2");
         },
       },
-      index: { folder: FOLDER, title: "Merge requests under review", include: (file) => path.posix.basename(file) === DESCRIPTION },
+      index: MERGES_INDEX,
       async sync(context) {
         return (await pollMerges(context, { pull: true, includeDrafts: false, includeOwn: false })).report;
       },
@@ -114,6 +114,7 @@ const gitlab: Plugin = {
           name: "mrs",
           description: "Find the merge requests that need review, and pull them into merge-requests/",
           mark: "read",
+          writes: (options) => options.pull !== false,
           options: [
             { flags: "--no-pull", description: "Only report; don't pull anything" },
             { flags: "--include-drafts", description: "Include drafts" },
@@ -134,6 +135,7 @@ const gitlab: Plugin = {
           name: "mr",
           description: "Pull specific merge requests, with their comments and linked items",
           mark: "read",
+          writes: true,
           arguments: ["<numbers...>"],
           options: [{ flags: "--worktree", description: "Also check each out in worktrees/mr-<N>, on the MR's own branch" }],
           help: "With --worktree, the MR's branch is checked out, tracking it on origin, never as a detached commit. Open it in an editor from worktrees/mr-<N>.",

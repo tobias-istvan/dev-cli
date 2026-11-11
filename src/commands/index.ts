@@ -1,8 +1,6 @@
-import { existsSync } from "node:fs";
-import path from "node:path";
 import type { Registry } from "../plugins/registry.ts";
 import type { Output } from "../plugins/types.ts";
-import { buildIndex } from "../core/indexes.ts";
+import { buildServiceIndex } from "../core/indexes.ts";
 import { DevError } from "../core/output.ts";
 import { loadConfig } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
@@ -20,12 +18,11 @@ export function runIndex(registry: Registry, out: Output, only?: string): void {
 
   for (const { service } of targets) {
     const name = service.index?.folder ?? service.id;
-    const folder = path.join(root, name);
-    if (!existsSync(folder)) {
+    const result = buildServiceIndex(root, service);
+    if (!result) {
       out.info(`${name}/: no folder yet. Run a sync first.`);
       continue;
     }
-    const result = buildIndex(folder, service.index?.title ?? service.title, service.index?.include);
     out.info(`${name}/index.md: ${result.items} item${result.items === 1 ? "" : "s"}.`);
     for (const skipped of result.skipped) {
       out.warn(`  Skipped ${name}/${skipped.file}: missing ${skipped.missing.join(", ")} in its front matter.`);

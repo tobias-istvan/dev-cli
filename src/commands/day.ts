@@ -37,7 +37,9 @@ async function refresh(root: string, config: ProjectConfig, registry: Registry, 
       try {
         const update = await updateBase(root);
         out.info(
-          update.skipped
+          !update.fetched
+            ? `Code: the clone in repository/ has no remote, so there was nothing to fetch. Worktrees start from the local ${update.branch}.`
+            : update.skipped
             ? `Code: fetched. Left ${update.branch} as it was, because ${update.skipped}.`
             : `Code: ${update.branch} ${update.advanced > 0 ? `moved on by ${update.advanced} commit${update.advanced === 1 ? "" : "s"}` : "is current"}.`,
         );
@@ -64,7 +66,7 @@ export function runDayStatus(out: Output): void {
     if (state.refresh.command === "dev day start") out.info("snapshot.md is rewritten when it ends. A background one logs to .dev/state/day-start.log.");
     return;
   }
-  if (state.interrupted) out.info(`${state.interrupted.command ?? "A sync"}, started at ${time(state.interrupted.started)}, stopped before finishing. Run it again.`);
+  if (state.interrupted) out.info(`${state.interrupted.command ?? "A sync"}, started at ${time(state.interrupted.started)}, stopped before finishing. The next sync takes over its lock.`);
   out.info(`No sync is running. ${written}`);
 }
 

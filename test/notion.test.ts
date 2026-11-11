@@ -70,7 +70,7 @@ before(async () => {
     if (p === `/databases/${DB}/query`) return list([page(ROW, "Ship it", { type: "database_id", database_id: DB }, "2026-11-01T10:00:00.000Z", { Status: { type: "status", status: { name: "In progress" } } })]);
     return json(404, { message: "Could not find" });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
 
@@ -144,9 +144,10 @@ test("Notion links are recognised, and pages outside the scope aren't fetched", 
   const { notionService } = await import("../src/plugins/notion/index.ts");
   const found = notionService.links?.find(`See https://www.notion.so/acme/Ship-it-${ROW.replace(/-/g, "")}?pvs=4 and https://acme.notion.site/x?p=${OUTSIDE.replace(/-/g, "")}`, {} as never);
   assert.deepEqual(found?.map((r) => r.id), [ROW, OUTSIDE]);
+  assert.deepEqual(notionService.links?.find(`[Parent](https://app.notion.com/p/${ROW.replace(/-/g, "")}) and https://www.notion.com/help`, {} as never).map((r) => r.id), [ROW], "the newer app.notion.com addresses count, pages without an id don't");
 
   const root = workspace();
-  const context = { root, folder: path.join(root, "notion"), scope: { pages: [ROOT] }, settings: { fetch: "within-scope", sync: "full" }, credentials: () => ({ token: "ntn_test" }), out: { info() {}, warn() {} } } as never;
+  const context = { root, folder: path.join(root, "notion"), scope: { pages: [ROOT] }, settings: { fetch: "within-scope", sync: "full" }, credentials: () => ({ token: "ntn_test" }), out: { info() {}, warn() {} }, localize: async (body: string) => body } as never;
   process.env.DEV_NOTION_API_URL = apiUrl;
   try {
     await assert.rejects(notionService.links!.fetch(context, { service: "notion:notion", id: OUTSIDE }), /outside this workspace's scope/);
@@ -155,4 +156,24 @@ test("Notion links are recognised, and pages outside the scope aren't fetched", 
   } finally {
     delete process.env.DEV_NOTION_API_URL;
   }
+});
+
+test("pull writes one page again, by its file, link or id, even when Notion says it's unchanged", async () => {
+  const root = workspace();
+  await dev(root, ["sync", "notion"]);
+  const file = path.join(handbook(root), "Onboarding-000000020000", "index.md");
+
+  state.childText = "Edited without a new timestamp";
+  try {
+    assert.match((await dev(root, ["sync", "notion"])).out, /Notion: 0 new, 0 updated/, "a sync trusts the timestamp");
+    const pulled = await dev(root, ["notion", "pull", file]);
+    assert.equal(pulled.code, 0, pulled.err);
+    assert.match(pulled.out, /notion\/Handbook-000000010000\/Onboarding-000000020000\/index\.md/);
+    assert.match(readFileSync(file, "utf8"), /Edited without a new timestamp/);
+    assert.match(readFileSync(file, "utf8"), /via: scope/, "it keeps why it's here");
+  } finally {
+    state.childText = "Child text";
+  }
+  assert.match((await dev(root, ["notion", "pull", "nonsense"])).err, /isn't a Notion link, an id, or a page's file/);
+  assert.match((await dev(root, ["notion", "pull", OUTSIDE])).err, /outside this workspace's scope[^]*dev notion scope add/);
 });

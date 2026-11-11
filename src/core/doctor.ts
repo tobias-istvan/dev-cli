@@ -75,7 +75,8 @@ export async function doctor(root: string, registry: Registry, out: Output, opti
     const warning = looseWarning(plugin.name);
     if (warning) problems.push({ message: warning });
 
-    const saved = loadCredentials(plugin.name);
+    let saved;
+    try { saved = loadCredentials(plugin.name); } catch (error) { problems.push({ message: (error as Error).message, fix: (error as Error & { fix?: string }).fix }); continue; }
     if (!saved) {
       if (plugin.login.optional) notes.push(`${plugin.title}: no login, which is fine. With one, ${plugin.login.optional.benefit}.`);
       else problems.push({ message: `You're not logged in to ${plugin.title}.`, fix: `Run "dev login ${plugin.name}" yourself.` });
