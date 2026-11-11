@@ -37,7 +37,9 @@ async function refresh(root: string, config: ProjectConfig, registry: Registry, 
       try {
         const update = await updateBase(root);
         out.info(
-          update.skipped
+          !update.fetched
+            ? `Code: the clone in repository/ has no remote, so there was nothing to fetch. Worktrees start from the local ${update.branch}.`
+            : update.skipped
             ? `Code: fetched. Left ${update.branch} as it was, because ${update.skipped}.`
             : `Code: ${update.branch} ${update.advanced > 0 ? `moved on by ${update.advanced} commit${update.advanced === 1 ? "" : "s"}` : "is current"}.`,
         );

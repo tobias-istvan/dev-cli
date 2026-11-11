@@ -160,7 +160,7 @@ test("cleanup works offline and around a broken worktree, and never counts eithe
 
   const removed = dev(root, ["task", "cleanup", "--remove"]);
   assert.equal(removed.code, 0, removed.err);
-  assert.match(removed.err, /Couldn't reach origin/);
+  assert.match(removed.err, /Couldn't reach the repository's remote/);
   assert.match(removed.err, /Keep broken: git can't read it/);
   assert.ok(!existsSync(path.join(root, "worktrees", "idle")), "a worktree with nothing in it goes, even offline");
   assert.ok(existsSync(path.join(root, "worktrees", "broken")));
@@ -172,4 +172,44 @@ test("task commands need a clone", () => {
   const { code, err } = dev(root, ["task", "start", "x"]);
   assert.equal(code, 1);
   assert.match(err, /no code clone in repository\/\.\nFix: Run "dev init"/);
+});
+
+test("a clone with no remote, or a remote not called origin, still works", () => {
+  for (const setup of ["none", "upstream"] as const) {
+    const root = realpathSync(mkdtempSync(path.join(base, `ws-${setup}-`)));
+    assert.equal(dev(root, ["init", "--versioning", "example:code", "--repo", "acme/web", "--no-clone", "--service", "notes"]).code, 0);
+    // A project that only lives here, on master, or one whose remote has another name.
+    const repo = path.join(root, "repository");
+    if (setup === "none") {
+      mkdirSync(repo);
+      git(repo, "init", "--quiet", "--initial-branch=master");
+      git(repo, "config", "user.email", "t@example.test");
+      git(repo, "config", "user.name", "T");
+      writeFileSync(path.join(repo, "README.md"), "code\n");
+      git(repo, "add", ".");
+      git(repo, "commit", "--quiet", "-m", "start");
+    } else {
+      git(root, "clone", "--quiet", "--origin", "upstream", origin, "repository");
+    }
+
+    const started = dev(root, ["task", "start", "local-thing", "--title", "Local thing"]);
+    assert.equal(started.code, 0, started.err);
+    const worktree = path.join(root, "worktrees", "local-thing");
+    git(worktree, "config", "user.email", "t@example.test");
+    git(worktree, "config", "user.name", "T");
+    writeFileSync(path.join(worktree, "work.txt"), "work\n");
+    git(worktree, "add", "work.txt");
+    git(worktree, "commit", "--quiet", "-m", "Do the local thing");
+
+    const status = dev(root, ["task", "status"]);
+    assert.equal(status.code, 0, status.err);
+    assert.match(status.out, /1 commit/, `${setup}: commits are counted against the ${setup === "none" ? "local" : "remote"} base`);
+
+    const day = dev(root, ["day", "start"]);
+    assert.doesNotMatch(day.err, /Code: couldn't update/, day.err);
+    assert.match(day.out, setup === "none" ? /Code: the clone in repository\/ has no remote, so there was nothing to fetch\. Worktrees start from the local master\./ : /Code: main is current\./);
+    const cleanup = dev(root, ["task", "cleanup"]);
+    assert.equal(cleanup.code, 0, cleanup.err);
+    if (setup === "none") assert.doesNotMatch(cleanup.err, /Couldn't reach/, "no remote isn't an unreachable one");
+  }
 });

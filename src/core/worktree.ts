@@ -50,10 +50,34 @@ export function branchName(pattern: string, values: { type: string; id: string; 
     .replace(/^[/-]+|[/-]+$/g, "");
 }
 
-/** The default branch, from origin/HEAD rather than assumed. */
+/**
+ * The clone's remote: the one its checked-out branch tracks, else origin, else the first.
+ * Null for a clone that only lives here, which works too, with nothing to fetch.
+ */
+export async function remoteName(repo: string): Promise<string | null> {
+  const remotes = ((await gitMaybe(repo, ["remote"])) ?? "").split("\n").filter(Boolean);
+  if (remotes.length === 0) return null;
+  const branch = await gitMaybe(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const tracked = branch ? await gitMaybe(repo, ["config", "--get", `branch.${branch}.remote`]) : null;
+  if (tracked && remotes.includes(tracked)) return tracked;
+  return remotes.includes("origin") ? "origin" : remotes[0]!;
+}
+
+/** The default branch: the remote's, else main or master, else whatever the clone has checked out. */
 export async function defaultBranch(repo: string): Promise<string> {
-  const ref = await gitMaybe(repo, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
-  return ref ? ref.replace("refs/remotes/origin/", "") : "main";
+  const remote = await remoteName(repo);
+  const ref = remote ? await gitMaybe(repo, ["symbolic-ref", `refs/remotes/${remote}/HEAD`]) : null;
+  if (ref) return ref.replace(`refs/remotes/${remote}/`, "");
+  for (const name of ["main", "master"]) {
+    if (await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${name}`])) return name;
+  }
+  return (await gitMaybe(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"])) ?? "main";
+}
+
+/** What to compare with or start from: the remote's copy of the base when there is one, else the local base. */
+export async function baseRef(repo: string, base: string): Promise<string> {
+  const remote = await remoteName(repo);
+  return remote && (await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${base}`])) ? `${remote}/${base}` : base;
 }
 
 /**
@@ -155,10 +179,10 @@ export async function ensureWorktree(root: string, id: string, branch: string, b
     return { path: dir, branch: await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]), existed: true, base: baseBranch };
   }
 
-  // Start from what's on origin, not from a clone that may be days old. Offline, the last
-  // fetch will do: nothing is lost by starting from an older base.
-  await gitMaybe(repo, ["fetch", "origin", "--prune"]);
-  const start = (await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `origin/${baseBranch}`])) ? `origin/${baseBranch}` : baseBranch;
+  // Start from what's on the remote, not from a clone that may be days old. Offline, the last
+  // fetch will do: nothing is lost by starting from an older base. Without a remote, the local base.
+  await fetchRemote(repo);
+  const start = await baseRef(repo, baseBranch);
 
   // --no-track: otherwise the branch tracks the base, and git status and git pull
   // compare against it. It gets its real upstream when it's first pushed.
@@ -196,7 +220,7 @@ export async function worktreeIds(root: string): Promise<string[]> {
 
 export async function inspectWorktree(root: string, id: string, base: string): Promise<WorktreeState> {
   const dir = worktreeDir(root, id);
-  const ref = (await gitMaybe(dir, ["rev-parse", "--verify", "--quiet", `origin/${base}`])) ? `origin/${base}` : base;
+  const ref = await baseRef(existsSync(path.join(repositoryDir(root), ".git")) ? repositoryDir(root) : dir, base);
   const lines = (value: string | null) => (value ?? "").split("\n").filter(Boolean);
   const [branch, unmerged, changed, dirty, behind, unpushed] = await Promise.all([
     git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]),
@@ -222,9 +246,11 @@ export async function inspectWorktrees(root: string, base: string): Promise<{ st
   return { states, broken };
 }
 
-/** Fetches origin so the base and upstreams are current. False when origin can't be reached. */
-export async function fetchOrigin(repo: string): Promise<boolean> {
-  return (await gitMaybe(repo, ["fetch", "origin", "--prune"])) !== null;
+/** Fetches the clone's remote so the base and upstreams are current. */
+export async function fetchRemote(repo: string): Promise<"fetched" | "unreachable" | "none"> {
+  const remote = await remoteName(repo);
+  if (!remote) return "none";
+  return (await gitMaybe(repo, ["fetch", remote, "--prune"])) !== null ? "fetched" : "unreachable";
 }
 
 /**
@@ -266,17 +292,19 @@ export async function reviewWorktree(
   head: { branch: string } | { forkRef: string },
 ): Promise<{ path: string; branch: string; existed: boolean }> {
   const repo = requireClone(root);
+  const origin = await remoteName(repo);
+  if (!origin) throw new DevError("Reviewing a pull request needs the repository's remote, and the clone in repository/ has none.", "Add it with: git -C repository remote add origin <url>");
   const dir = worktreeDir(root, id);
   const branch = "branch" in head ? head.branch : id;
-  const remote = "branch" in head ? `refs/remotes/origin/${branch}` : `refs/remotes/dev-reviews/${id}`;
+  const remote = "branch" in head ? `refs/remotes/${origin}/${branch}` : `refs/remotes/dev-reviews/${id}`;
   const source = "branch" in head ? `refs/heads/${branch}` : head.forkRef;
-  await git(repo, ["fetch", "origin", `+${source}:${remote}`]);
+  await git(repo, ["fetch", origin, `+${source}:${remote}`]);
   const existed = existsSync(dir);
   if (!existed) {
     const local = await gitMaybe(repo, ["rev-parse", "--verify", `refs/heads/${branch}`]);
     if (local) await git(repo, ["worktree", "add", dir, branch]);
     else await git(repo, ["worktree", "add", "--no-track", "-b", branch, dir, remote]);
-    if ("branch" in head) await git(dir, ["branch", "--set-upstream-to", `origin/${branch}`]);
+    if ("branch" in head) await git(dir, ["branch", "--set-upstream-to", `${origin}/${branch}`]);
   }
   const current = await git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (current !== branch) throw new DevError(`Review worktree has unexpected branch ${current}.`);

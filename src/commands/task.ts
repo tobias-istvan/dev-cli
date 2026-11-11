@@ -14,7 +14,7 @@ import {
   DEFAULT_BRANCH_PATTERN,
   defaultBranch,
   ensureWorktree,
-  fetchOrigin,
+  fetchRemote,
   inspectWorktree,
   inspectWorktrees,
   isSafeToRemove,
@@ -154,8 +154,9 @@ export async function runTaskStatus(out: Output, id?: string): Promise<void> {
 export async function runTaskCleanup(out: Output, options: { remove?: boolean }): Promise<void> {
   const root = requireWorkspaceRoot();
   const base = await defaultBranch(requireClone(root));
-  const fetched = await fetchOrigin(requireClone(root));
-  if (!fetched) out.warn("Couldn't reach origin, so only worktrees whose commits are all in the base count as safe.");
+  const remote = await fetchRemote(requireClone(root));
+  const fetched = remote === "fetched";
+  if (remote === "unreachable") out.warn("Couldn't reach the repository's remote, so only worktrees whose commits are all in the base count as safe.");
   const { states, broken } = await inspectWorktrees(root, base);
   const safe = states.filter((s) => isSafeToRemove(s, { trustUpstream: fetched }));
   const kept = states.filter((s) => !isSafeToRemove(s, { trustUpstream: fetched }));
@@ -166,7 +167,7 @@ export async function runTaskCleanup(out: Output, options: { remove?: boolean })
     return;
   }
   for (const state of kept) {
-    const reasons = [state.unmerged.length > 0 ? `${state.unmerged.length} commit(s) not in ${base}${!fetched && state.unpushed?.length === 0 ? " (pushed, but origin couldn't be checked)" : ""}` : "", state.dirty.length > 0 ? `${state.dirty.length} uncommitted change(s)` : ""].filter(Boolean);
+    const reasons = [state.unmerged.length > 0 ? `${state.unmerged.length} commit(s) not in ${base}${!fetched && state.unpushed?.length === 0 ? " (pushed, but the remote couldn't be checked)" : ""}` : "", state.dirty.length > 0 ? `${state.dirty.length} uncommitted change(s)` : ""].filter(Boolean);
     out.info(`Keep ${state.id}: ${reasons.join(", ")}.`);
   }
   if (safe.length === 0) {

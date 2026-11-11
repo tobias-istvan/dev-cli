@@ -8,7 +8,7 @@ import { workspaceServiceContext } from "./context.ts";
 import { git, gitMaybe } from "./git.ts";
 import type { ProjectConfig } from "./project-config.ts";
 import { enabledServices } from "./scaffold.ts";
-import { defaultBranch, inspectWorktrees, isSafeToRemove, repositoryDir, worktreeDir, worktreeIds } from "./worktree.ts";
+import { baseRef, defaultBranch, inspectWorktrees, remoteName, isSafeToRemove, repositoryDir, worktreeDir, worktreeIds } from "./worktree.ts";
 
 /**
  * The day: snapshot.md says what to work on, and work-sessions/<date>/summary.md records
@@ -77,26 +77,32 @@ export interface BaseUpdate {
   advanced: number;
   /** Why the local branch was left alone, if it was. */
   skipped: string | null;
+  /** Whether there was a remote to fetch. */
+  fetched: boolean;
 }
 
 /**
  * Fetches, then fast-forwards the clone's base branch. Fast-forward only, and never with
  * uncommitted changes: nothing here may discard work. The fetch is what matters, since
- * new worktrees start from origin/<base>.
+ * new worktrees start from the remote's copy of the base. A clone without a remote is
+ * left as it is.
  */
 export async function updateBase(root: string): Promise<BaseUpdate> {
   const repo = repositoryDir(root);
   const branch = await defaultBranch(repo);
-  await git(repo, ["fetch", "origin", "--prune"]);
+  const remote = await remoteName(repo);
+  if (!remote) return { branch, advanced: 0, skipped: null, fetched: false };
+  await git(repo, ["fetch", remote, "--prune"]);
 
   const current = await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  if (current !== branch) return { branch, advanced: 0, skipped: `the clone has ${current} checked out` };
-  if ((await git(repo, ["status", "--porcelain"])) !== "") return { branch, advanced: 0, skipped: "the clone has uncommitted changes" };
+  if (current !== branch) return { branch, advanced: 0, skipped: `the clone has ${current} checked out`, fetched: true };
+  if ((await git(repo, ["status", "--porcelain"])) !== "") return { branch, advanced: 0, skipped: "the clone has uncommitted changes", fetched: true };
+  if (!(await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${branch}`]))) return { branch, advanced: 0, skipped: `${remote} has no ${branch} branch`, fetched: true };
 
-  const [ahead = "0", behind = "0"] = (await git(repo, ["rev-list", "--left-right", "--count", `${branch}...origin/${branch}`])).split(/\s+/);
-  if (Number(ahead) > 0) return { branch, advanced: 0, skipped: `local ${branch} has ${ahead} commit(s) not on origin` };
-  if (Number(behind) > 0) await git(repo, ["merge", "--ff-only", `origin/${branch}`]);
-  return { branch, advanced: Number(behind), skipped: null };
+  const [ahead = "0", behind = "0"] = (await git(repo, ["rev-list", "--left-right", "--count", `${branch}...${remote}/${branch}`])).split(/\s+/);
+  if (Number(ahead) > 0) return { branch, advanced: 0, skipped: `local ${branch} has ${ahead} commit(s) not on ${remote}`, fetched: true };
+  if (Number(behind) > 0) await git(repo, ["merge", "--ff-only", `${remote}/${branch}`]);
+  return { branch, advanced: Number(behind), skipped: null, fetched: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +164,10 @@ export interface SessionLine {
 /** Commits made today in each worktree. */
 async function commitsOn(root: string, date: string): Promise<Array<{ id: string; commits: string[] }>> {
   const results: Array<{ id: string; commits: string[] }> = [];
-  const base = await defaultBranch(repositoryDir(root));
+  const base = await baseRef(repositoryDir(root), await defaultBranch(repositoryDir(root)));
   const seen = new Set<string>();
   for (const id of await worktreeIds(root)) {
-    const log = await gitMaybe(worktreeDir(root, id), ["log", "--oneline", "--no-merges", `origin/${base}..HEAD`, `--since=${date} 00:00`, `--until=${date} 23:59:59`]);
+    const log = await gitMaybe(worktreeDir(root, id), ["log", "--oneline", "--no-merges", `${base}..HEAD`, `--since=${date} 00:00`, `--until=${date} 23:59:59`]);
     const commits = (log ?? "").split("\n").filter((line) => { const sha = line.split(" ")[0]; if (!line || seen.has(sha!)) return false; seen.add(sha!); return true; });
     if (commits.length > 0) results.push({ id, commits });
   }
