@@ -7,7 +7,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { describeOutside } from "../../core/links.ts";
 import { DevError, NotFound, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, choose, search as searchPrompt } from "../../core/prompt.ts";
-import { mirrorAttachments } from "./attachments.ts";
+import { mirrorAttachments } from "../../core/attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { htmlToMarkdown } from "./html.ts";
 
