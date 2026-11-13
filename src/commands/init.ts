@@ -7,7 +7,7 @@ import type { Output, ServiceEntry } from "../plugins/types.ts";
 import { pluginContext, serviceContext } from "../core/context.ts";
 import { loadCredentials } from "../core/credentials.ts";
 import { DevError } from "../core/output.ts";
-import { chooseMany, choose, search } from "../core/prompt.ts";
+import { chooseMany, choose, search, withInkPrompts } from "../core/prompt.ts";
 import { configPath, parseConfig, type ProjectConfig, saveConfig, CONFIG_VERSION } from "../core/project-config.ts";
 import { scaffold } from "../core/scaffold.ts";
 import { findWorkspaceRoot } from "../core/workspace.ts";
@@ -119,7 +119,12 @@ async function cloneRepository(root: string, entry: ServiceEntry, repo: string, 
   return (await versioning.clone(pluginContext(root, out), saved?.credentials ?? {}, repo, target, source)) ? "cloned" : "failed";
 }
 
-export async function runInit(program: Command, registry: Registry, out: Output, folder: string | undefined, options: InitOptions): Promise<void> {
+/** Init asks its questions, its logins' and its services' with ink: an experiment. */
+export function runInit(program: Command, registry: Registry, out: Output, folder: string | undefined, options: InitOptions): Promise<void> {
+  return withInkPrompts(() => initWorkspace(program, registry, out, folder, options));
+}
+
+async function initWorkspace(program: Command, registry: Registry, out: Output, folder: string | undefined, options: InitOptions): Promise<void> {
   const root = path.resolve(folder ?? process.cwd());
   const goThere = folder ? `cd ${folder} && ` : "";
 
