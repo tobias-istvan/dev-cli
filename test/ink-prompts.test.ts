@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import { test } from "node:test";
-import { highlight, pickerKey, pickMany, pickOne, pickRemote, type PickerState, terminal, text, windowStart, yesNo } from "../src/core/ink-prompts.ts";
+import { elapsed, highlight, pickerKey, pickMany, pickOne, pickRemote, type PickerState, running, terminal, text, windowStart, yesNo } from "../src/core/ink-prompts.ts";
 import { rank, withInkPrompts } from "../src/core/prompt.ts";
 
 const repos = Array.from({ length: 40 }, (_, i) => ({ value: `acme/repo-${i}`, name: `acme/repo-${i}` }));
@@ -154,4 +154,41 @@ test("Ctrl+C cancels with a clear error", async () => {
 test("without a terminal, init's ink questions still say which flag to use", async () => {
   const { choose } = await import("../src/core/prompt.ts");
   await assert.rejects(withInkPrompts(() => choose("Where?", [{ value: "a", name: "A" }], "--where")), (error: { fix?: string }) => error.fix === "Pass --where instead.");
+});
+
+test("a step shows a spinner with its progress, then what it found and how long it took", async () => {
+  const tty = fakeTerminal();
+  const result = await running("Finding your boards", async (report) => {
+    report("acme (1 of 2)");
+    await wait(120);
+    report("globex (2 of 2), 3 boards so far");
+    await wait(120);
+    return [1, 2, 3, 4];
+  }, (found) => `Found ${found.length} open boards`);
+  assert.deepEqual(result, [1, 2, 3, 4]);
+  assert.match(tty.screen(), /Finding your boards… acme \(1 of 2\)/);
+  assert.match(tty.screen(), /globex \(2 of 2\), 3 boards so far/);
+  assert.match(tty.screen(), /✔ Found 4 open boards \d+ms/);
+});
+
+test("a step that fails says so, and the error still reaches dev", async () => {
+  const tty = fakeTerminal();
+  await assert.rejects(running("Loading Jira projects", async () => { throw new Error("401 Unauthorized"); }), /401/);
+  assert.match(tty.screen(), /✖ Loading Jira projects failed after/);
+});
+
+test("waits read naturally", () => {
+  assert.equal(elapsed(850), "850ms");
+  assert.equal(elapsed(4230), "4.2s");
+  assert.equal(elapsed(65_000), "1m 05s");
+});
+
+test("keys pressed during a step are swallowed, and Ctrl+C cancels it", async () => {
+  const tty = fakeTerminal();
+  const step = running("Loading Confluence spaces", () => new Promise(() => {}));
+  await tty.type("x", "y");
+  assert.doesNotMatch(tty.screen(), /[xy]/);
+  await tty.type("\u0003");
+  await assert.rejects(step, /Cancelled/);
+  assert.match(tty.screen(), /✖ Loading Confluence spaces cancelled after/);
 });

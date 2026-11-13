@@ -7,6 +7,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { describeOutside } from "../../core/links.ts";
 import { DevError, NotFound, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, choose, search as searchPrompt } from "../../core/prompt.ts";
+import { count, step } from "../../core/progress.ts";
 import { mirrorAttachments } from "./attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { htmlToMarkdown } from "./html.ts";
@@ -382,15 +383,22 @@ async function fetchOne(context: ServiceContext, reference: Reference, via: Via 
 
 async function chooseScope(context: ServiceContext): Promise<Scope> {
   const api = client(context);
-  context.out.info("Loading projects...");
-  const projects: Array<{ key: string; name: string }> = [];
-  let start = 0;
-  for (;;) {
-    const page = await api.get<{ values: Array<{ key: string; name: string }>; isLast?: boolean }>(`/rest/api/3/project/search?maxResults=100&startAt=${start}`);
-    projects.push(...page.values);
-    if (page.isLast !== false || page.values.length === 0) break;
-    start += page.values.length;
-  }
+  const projects = await step(
+    context.out,
+    "Loading Jira projects",
+    async (report) => {
+      const found: Array<{ key: string; name: string }> = [];
+      for (let start = 0; ; ) {
+        const page = await api.get<{ values: Array<{ key: string; name: string }>; isLast?: boolean }>(`/rest/api/3/project/search?maxResults=100&startAt=${start}`);
+        found.push(...page.values);
+        if (page.isLast !== false || page.values.length === 0) break;
+        start += page.values.length;
+        report(`${found.length} so far`);
+      }
+      return found;
+    },
+    (found) => `Found ${count(found.length, "Jira project")}`,
+  );
   if (projects.length === 0) throw new DevError("Your Atlassian account can't see any Jira projects.");
 
   const project = await searchPrompt(

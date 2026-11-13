@@ -53,7 +53,8 @@ export class NotionApi {
   }
 
   /** Every result of a paged list. */
-  async all<T>(method: "GET" | "POST", path: string, body: Record<string, unknown> = {}): Promise<T[]> {
+  /** Every page of results. `onPage` hears the running total, for showing progress. */
+  async all<T>(method: "GET" | "POST", path: string, body: Record<string, unknown> = {}, onPage?: (count: number) => void): Promise<T[]> {
     const results: T[] = [];
     let cursor: string | undefined;
     const visited = new Set<string>();
@@ -65,6 +66,7 @@ export class NotionApi {
           ? await this.request("GET", `${path}${path.includes("?") ? "&" : "?"}page_size=100${cursor ? `&start_cursor=${cursor}` : ""}`)
           : await this.request("POST", path, { ...body, page_size: 100, ...(cursor ? { start_cursor: cursor } : {}) });
       results.push(...page.results);
+      onPage?.(results.length);
       cursor = page.has_more ? (page.next_cursor ?? undefined) : undefined;
     } while (cursor);
     return results;

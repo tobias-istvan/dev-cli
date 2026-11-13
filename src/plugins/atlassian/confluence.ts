@@ -9,6 +9,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { localLookup } from "../../core/links.ts";
 import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, search as searchPrompt, searchRemote } from "../../core/prompt.ts";
+import { count, step } from "../../core/progress.ts";
 import { mirrorAttachments } from "./attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { convertStorageToMarkdown } from "./html.ts";
@@ -510,8 +511,12 @@ const WHOLE = "__whole";
 
 async function chooseScope(context: ServiceContext): Promise<Scope> {
   const api = client(context);
-  context.out.info("Loading spaces...");
-  const all = await paginate<{ id: string; key: string; name: string }>(api, "/wiki/api/v2/spaces?limit=250");
+  const all = await step(
+    context.out,
+    "Loading Confluence spaces",
+    () => paginate<{ id: string; key: string; name: string }>(api, "/wiki/api/v2/spaces?limit=250"),
+    (found) => `Found ${count(found.length, "Confluence space")}`,
+  );
   if (all.length === 0) throw new DevError("Your Atlassian account can't see any Confluence spaces.");
 
   const ids: string[] = [];

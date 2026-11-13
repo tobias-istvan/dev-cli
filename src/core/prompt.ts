@@ -31,6 +31,11 @@ export async function withInkPrompts<R>(task: () => Promise<R>): Promise<R> {
 
 const ink = () => import("./ink-prompts.ts");
 
+/** Whether questions and progress are drawn with ink right now. */
+export function usingInk(): boolean {
+  return style === "ink" && Boolean(process.stdout.isTTY);
+}
+
 /** Lists longer than this are searched by typing rather than scrolled through. */
 const SHORT_LIST = 8;
 

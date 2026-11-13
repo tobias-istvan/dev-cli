@@ -295,3 +295,74 @@ export function text(message: string, options: { initial?: string; mask?: boolea
 export function yesNo(message: string, initial: boolean): Promise<boolean> {
   return ask<boolean>(h(ConfirmQuestion, { message, initial }));
 }
+
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/** "850ms" under a second, then "4.2s", then "1m 05s". */
+export function elapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+type StepProps = { label: string; detail: string; started: number; status: "running" | "done" | "failed" | "cancelled"; summary?: string; onCancel: () => void };
+
+function Step({ label, detail, started, status, summary, onCancel }: StepProps) {
+  const [now, setNow] = useState(Date.now());
+  // Keys pressed while waiting would print over the spinner and then answer the next question
+  // unseen, so they're swallowed. Ctrl+C still stops.
+  useInput((input, key) => {
+    if (key.ctrl && input === "c") onCancel();
+  }, { isActive: status === "running" });
+  useEffect(() => {
+    if (status !== "running") return;
+    const timer = setInterval(() => setNow(Date.now()), 80);
+    return () => clearInterval(timer);
+  }, [status]);
+  const took = elapsed((status === "running" ? now : Date.now()) - started);
+
+  if (status === "done") return h(Text, null, h(Text, { color: "green" }, "✔ "), summary ?? label, h(Text, { dimColor: true }, ` ${took}`));
+  if (status !== "running") return h(Text, null, h(Text, { color: "red" }, "✖ "), label, h(Text, { dimColor: true }, ` ${status} after ${took}`));
+  const frame = SPINNER[Math.floor((now - started) / 80) % SPINNER.length];
+  // The time shows once the wait is long enough to wonder about.
+  return h(
+    Text,
+    { wrap: "truncate-end" },
+    h(Text, { color: "cyan" }, `${frame} `),
+    `${label}…`,
+    detail ? h(Text, { color: "cyan" }, ` ${detail}`) : "",
+    now - started >= 1000 ? h(Text, { dimColor: true }, ` ${took}`) : "",
+  );
+}
+
+/** Shows a spinner while `task` runs, then a line saying what it found, or that it failed. */
+export async function running<T>(label: string, task: (report: (detail: string) => void) => Promise<T>, done?: (result: T) => string): Promise<T> {
+  const started = Date.now();
+  let detail = "";
+  let cancel = () => {};
+  const cancelled = new Promise<never>((_, reject) => { cancel = () => reject(new Cancelled()); });
+  const view = (status: StepProps["status"], summary?: string) => h(Step, { label, detail, started, status, summary, onCancel: cancel });
+  // Logs from the task print above the spinner.
+  const app = render(view("running"), { ...terminal, exitOnCtrlC: false, patchConsole: true });
+  const finish = async (node: ReactNode) => {
+    app.rerender(node);
+    await app.waitUntilRenderFlush();
+    app.unmount();
+    await app.waitUntilExit();
+  };
+  try {
+    const result = await Promise.race([
+      task((next) => {
+        detail = next;
+        app.rerender(view("running"));
+      }),
+      cancelled,
+    ]);
+    await finish(view("done", done?.(result)));
+    return result;
+  } catch (error) {
+    await finish(view(error instanceof Cancelled ? "cancelled" : "failed"));
+    throw error;
+  }
+}

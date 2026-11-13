@@ -7,6 +7,7 @@ import type { Output, ServiceEntry } from "../plugins/types.ts";
 import { pluginContext, serviceContext } from "../core/context.ts";
 import { loadCredentials } from "../core/credentials.ts";
 import { DevError } from "../core/output.ts";
+import { count, stage, step } from "../core/progress.ts";
 import { chooseMany, choose, search, withInkPrompts } from "../core/prompt.ts";
 import { configPath, parseConfig, type ProjectConfig, saveConfig, CONFIG_VERSION } from "../core/project-config.ts";
 import { scaffold } from "../core/scaffold.ts";
@@ -68,8 +69,13 @@ async function pickRepository(entry: ServiceEntry, config: ProjectConfig, flag: 
   const saved = loadCredentials(entry.plugin.name);
   if (!saved || !entry.service.versioning) throw new DevError(`No ${entry.plugin.title} login to list repositories with.`);
 
-  out.info("Fetching your repositories...");
-  const repositories = await entry.service.versioning.listRepositories(pluginContext(null, out), saved.credentials);
+  const versioning = entry.service.versioning;
+  const repositories = await step(
+    out,
+    `Fetching your ${entry.plugin.title} repositories`,
+    () => versioning.listRepositories(pluginContext(null, out), saved.credentials),
+    (found) => `Found ${count(found.length, "repository", "repositories")} on ${entry.plugin.title}`,
+  );
   if (repositories.length === 0) {
     throw new DevError(`Your ${entry.plugin.title} account can't see any repositories.`, "Pass --repo <owner/name>, or log in with another account.");
   }
@@ -151,13 +157,17 @@ async function initWorkspace(program: Command, registry: Registry, out: Output, 
     config = parsed.config;
   }
 
+  const stages = options.clone ? 4 : 3;
+
   // 1-2. The versioning service and its repository.
+  stage(out, 1, stages, "The code");
   const versioning = await pickVersioning(registry, config, options.versioning, out);
   await ensureLogin(versioning.plugin, out, { account: options.account });
   const repo = await pickRepository(versioning, config, options.repo, out);
   config.versioning = { service: versioning.key, repo };
 
   // 3-5. Connected services, their logins and scopes.
+  stage(out, 2, stages, "Connected services");
   for (const entry of await pickServices(registry, config, list(options.service), out)) {
     await ensureLogin(entry.plugin, out);
     let scope = {};
@@ -171,6 +181,7 @@ async function initWorkspace(program: Command, registry: Registry, out: Output, 
   }
 
   // 6. The config and generated files.
+  stage(out, 3, stages, "Workspace files");
   saveConfig(root, config);
   const files = scaffold(root, config, registry, workspaceCommands(program, registry, config));
   out.info(`\nWorkspace files: ${files.created.length} created, ${files.updated.length} updated, ${files.unchanged.length} already in place.`);
@@ -181,6 +192,7 @@ async function initWorkspace(program: Command, registry: Registry, out: Output, 
   // 7. The code.
   let clone: CloneResult = "skipped";
   if (options.clone) {
+    stage(out, 4, stages, "Cloning the code");
     clone = await cloneRepository(root, versioning, repo, options.cloneUrl, out);
     if (clone === "failed") {
       const url = options.cloneUrl ?? versioning.service.versioning?.cloneUrl(repo) ?? repo;

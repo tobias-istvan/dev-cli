@@ -101,7 +101,8 @@ It then writes `dev.yaml`, the agent files and the hooks, and clones the code in
 `dev.yaml` says, offers what's missing, and never overwrites a file you've edited.
 
 *Experimental:* `init` draws its questions with [ink](https://github.com/vadimdemedes/ink).
-Every list filters as you type and marks the letters that matched; ↑↓, Page Up/Down, Home
+It shows each step, with a spinner, progress and timing while it fetches lists. Every list
+filters as you type and marks the letters that matched; ↑↓, Page Up/Down, Home
 and End move; Tab picks and Ctrl+A picks everything shown; Esc clears the filter. Set
 `DEV_PROMPTS=classic` for the usual prompts. Other commands are unchanged.
 

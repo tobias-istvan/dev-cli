@@ -7,6 +7,7 @@ import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matt
 import { buildIndex } from "../../core/indexes.ts";
 import { DevError, describeError } from "../../core/output.ts";
 import { choose, chooseMany } from "../../core/prompt.ts";
+import { count, step } from "../../core/progress.ts";
 import { GitHubApi } from "./api.ts";
 
 /**
@@ -258,9 +259,10 @@ type Page<T> = { nodes: T[]; pageInfo: { hasNextPage: boolean; endCursor: string
 type BoardSummary = { number: number; title: string; closed: boolean };
 
 /** Every open board the login can see, its own and its organizations', following every page. */
-async function allBoards(api: GitHubApi): Promise<Array<{ owner: string; number: number; title: string }>> {
+async function allBoards(api: GitHubApi, report: (detail: string) => void = () => {}): Promise<Array<{ owner: string; number: number; title: string }>> {
   const boards: Array<{ owner: string; number: number; title: string }> = [];
   const owners: Array<{ login: string; kind: "user" | "organization" }> = [];
+  report("listing your organizations");
   for (let after: string | null = null, more = true; more; ) {
     const data: { viewer: { login: string; organizations: Page<{ login: string }> } } = await api.graphql(
       "query($after: String) { viewer { login organizations(first: 100, after: $after) { nodes { login } pageInfo { hasNextPage endCursor } } } }",
@@ -270,7 +272,8 @@ async function allBoards(api: GitHubApi): Promise<Array<{ owner: string; number:
     owners.push(...data.viewer.organizations.nodes.map((o) => ({ login: o.login, kind: "organization" as const })));
     ({ hasNextPage: more, endCursor: after } = data.viewer.organizations.pageInfo);
   }
-  for (const owner of owners) {
+  for (const [i, owner] of owners.entries()) {
+    report(`${owner.login} (${i + 1} of ${owners.length})${boards.length > 0 ? `, ${count(boards.length, "board")} so far` : ""}`);
     for (let after: string | null = null, more = true; more; ) {
       const data: Record<string, { projectsV2: Page<BoardSummary> } | null> = await api.graphql(
         `query($login: String!, $after: String) { owner: ${owner.kind}(login: $login) { projectsV2(first: 100, after: $after) { nodes { number title closed } pageInfo { hasNextPage endCursor } } } }`,
@@ -299,7 +302,7 @@ export const projects: Service = {
     },
     async choose(context) {
       const api = GitHubApi.from(context.credentials());
-      const boards = await allBoards(api);
+      const boards = await step(context.out, "Finding your project boards", (report) => allBoards(api, report), (found) => `Found ${count(found.length, "open board")}`);
       const options = boards.map((b) => ({ value: `${b.owner}/${b.number}`, name: b.title, description: `${b.owner}/${b.number}` }));
       if (options.length === 0) throw new DevError("The GitHub login can't see any project boards.", "Add one later with: dev github-projects scope add <board link>");
       const picked = await chooseMany("Which boards? Type to filter, Tab to pick, Enter when done.", options, "edit dev.yaml");
