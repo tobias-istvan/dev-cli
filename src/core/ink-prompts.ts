@@ -115,9 +115,15 @@ class Cancelled extends DevError {
 /** Where questions are asked. Tests swap in their own streams. */
 export const terminal: { stdin: NodeJS.ReadableStream; stdout: NodeJS.WritableStream } = { stdin: process.stdin, stdout: process.stdout };
 
+/**
+ * Ink guesses whether it can redraw from CI variables too, and in CI mode draws only the
+ * last frame. dev has already checked for a terminal before asking, so it says so itself.
+ */
+const drawing = () => ({ ...terminal, interactive: Boolean((terminal.stdout as { isTTY?: boolean }).isTTY) });
+
 /** Mounts a question, waits for its answer, and leaves the answered line on screen. */
 async function ask<R>(element: ReactNode): Promise<R> {
-  const app = render(element, { ...terminal, exitOnCtrlC: false, patchConsole: false });
+  const app = render(element, { ...drawing(), exitOnCtrlC: false, patchConsole: false });
   return (await app.waitUntilExit()) as R;
 }
 
@@ -344,7 +350,7 @@ export async function running<T>(label: string, task: (report: (detail: string) 
   const cancelled = new Promise<never>((_, reject) => { cancel = () => reject(new Cancelled()); });
   const view = (status: StepProps["status"], summary?: string) => h(Step, { label, detail, started, status, summary, onCancel: cancel });
   // Logs from the task print above the spinner.
-  const app = render(view("running"), { ...terminal, exitOnCtrlC: false, patchConsole: true });
+  const app = render(view("running"), { ...drawing(), exitOnCtrlC: false, patchConsole: true });
   const finish = async (node: ReactNode) => {
     app.rerender(node);
     await app.waitUntilRenderFlush();
