@@ -380,7 +380,7 @@ export async function running<T>(label: string, task: (report: (detail: string) 
     if (error instanceof Cancelled) {
       terminal.interrupt();
       // The signal lands on the next turn; until then, nothing should report this as a failure.
-      await new Promise((resolve) => setTimeout(resolve, 1000).unref());
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     throw error;
   }
