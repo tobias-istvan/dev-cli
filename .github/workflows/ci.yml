@@ -1,5 +1,10 @@
 name: Checks
-on: [push, pull_request]
+# Pushes to branches with a PR are checked by the pull_request run, so a push only runs here on
+# the branches PRs merge into. Otherwise every PR push would run the whole matrix twice.
+on:
+  push:
+    branches: [main, "release/**"]
+  pull_request:
 permissions:
   contents: read
 jobs:
