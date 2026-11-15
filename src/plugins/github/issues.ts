@@ -6,6 +6,7 @@ import { splitFrontMatter, updateFields, writeItem, type Via } from "../../core/
 import { buildIndex } from "../../core/indexes.ts";
 import { describeOutside } from "../../core/links.ts";
 import { DevError, NotFound, OutsideScope, describeError } from "../../core/output.ts";
+import { tally } from "../../core/progress.ts";
 import { choose } from "../../core/prompt.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitHubApi, webBase } from "./api.ts";
@@ -169,6 +170,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   for (const repo of repos(context)) {
     let issues: Issue[];
     try {
+      context.progress(`listing ${repo}'s issues`);
       const listed = await api.listUpTo<Issue>(`/repos/${repo}/issues?state=open${mineOnly ? `&assignee=${encodeURIComponent(me)}` : ""}`, ISSUE_LIMIT);
       issues = listed.items.filter((i) => !i.pull_request);
       if (listed.truncated) {
@@ -180,7 +182,9 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
       report.failed.push({ id: repo, reason: describeError(error) });
       continue;
     }
+    const tick = tally(context.progress, issues.length, "issue", undefined, `${repo}: `);
     for (const issue of issues) {
+      tick();
       const id = key(repo, issue.number);
       seen.add(id);
       const existing = known.get(id);

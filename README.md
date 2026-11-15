@@ -100,11 +100,11 @@ It then writes `dev.yaml`, the agent files and the hooks, and clones the code in
 `repository/`. It never commits or pushes, and it's safe to run again: it keeps what
 `dev.yaml` says, offers what's missing, and never overwrites a file you've edited.
 
-*Experimental:* `init` draws its questions with [ink](https://github.com/vadimdemedes/ink).
-It shows each step, with a spinner, progress and timing while it fetches lists. Every list
-filters as you type and marks the letters that matched; ↑↓, Page Up/Down, Home
-and End move; Tab picks and Ctrl+A picks everything shown; Esc clears the filter. Set
-`DEV_PROMPTS=classic` for the usual prompts. Other commands are unchanged.
+*Experimental:* `init` draws its questions with [ink](https://github.com/vadimdemedes/ink),
+and heads each of its steps. Every list filters as you type and marks the letters that
+matched; ↑↓, Page Up/Down, Home and End move; Tab picks and Ctrl+A picks everything shown;
+Esc clears the filter. Set `DEV_PROMPTS=classic` for the usual prompts. Other commands ask
+as before. See [Progress](#progress) for what every command shows while it waits.
 
 Every question has a flag, for scripts:
 
@@ -489,6 +489,22 @@ dev sync --referenced    # reference sources only refresh what's here
 A file whose only change would be its sync time is left exactly as it was, so `git diff`
 after a sync shows only what really changed.
 
+### Progress
+
+Anything that waits on a service or git says what it's doing: `sync`, `day start`,
+`task list --refresh`, `task start`, `task cleanup`, `doctor`, and the scope pickers.
+
+- **At a terminal**, a live line on stderr shows a spinner, what's being fetched, how far
+  along it is (like `Jira: 40 of 120 tickets`) and how long it's taken. It then leaves a
+  line saying what it found.
+- **Everywhere else** (agents, scripts, CI, and the background `day start` log), plain lines
+  go to stderr: what started, and every 5 seconds how far it's got. No colour or cursor codes.
+
+Results go to stdout the same way in both, so `--json` output stays only JSON. dev can't tell
+a person from an agent, so it shows plain lines when stdout or stderr isn't a terminal, or
+when `CI` or `CLAUDECODE` is set, or `TERM=dumb`. Set `DEV_PROGRESS=plain` to ask for them
+anywhere.
+
 ### Full and referenced
 
 | | Task sources | Reference sources |
@@ -800,6 +816,8 @@ Names ending in `_URL` are settings, never credentials.
 | `CLAUDE_CONFIG_DIR`, `COPILOT_HOME` | `~/.claude`, `~/.copilot` | Where to find session transcripts |
 | `DEV_EXTRA_PLUGINS` | | Plugin modules to load, for developing plugins |
 | `DEV_DEBUG` | | Show stack traces for unexpected errors |
+| `DEV_PROGRESS` | | `plain` for plain progress lines, even at a terminal. See [Progress](#progress) |
+| `DEV_PROMPTS` | | `classic` for init's usual prompts, and plain progress lines |
 
 ## Troubleshooting
 
@@ -859,7 +877,8 @@ const plugin: Plugin = {
     description: "Tickets, one folder per ticket",
     role: "connected",
     scope: { describe, choose, validate },
-    sync,                          // write items with writeItem(), then buildIndex()
+    sync,                          // write items with writeItem(), then buildIndex();
+                                   // context.progress("12 of 40 tickets") as it goes
     tasks: { list },               // if it holds work
     links: { find, fetch },        // recognise and fetch its own references
     contribute: { snapshot, sessionStart, dayEnd, taskStart },

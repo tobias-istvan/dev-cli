@@ -32,6 +32,8 @@ export interface Problem {
 export interface Output {
   info(message: string): void;
   warn(message: string): void;
+  /** What's happening while someone waits, for agents, scripts and logs. Leave it out for none. */
+  progress?(message: string): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +79,11 @@ export interface ServiceContext extends PluginContext {
    * Nothing is fetched. Call it on a body before writing it.
    */
   localize(body: string, file: string): Promise<string>;
+  /**
+   * How far a long job has got, like "40 of 120 tickets", shown to whoever's waiting. Cheap
+   * to call often: it's drawn at most a few times a second, and plain lines are rarer still.
+   */
+  progress(detail: string): void;
 }
 
 // ---------------------------------------------------------------------------

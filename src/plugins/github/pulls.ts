@@ -9,6 +9,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitHubApi } from "./api.ts";
 import { describeError } from "../../core/output.ts";
+import { tally } from "../../core/progress.ts";
 
 /**
  * Other people's pull requests, pulled into pull-requests/<N>/ for review.
@@ -247,9 +248,12 @@ export async function poll(context: ServiceContext, options: PollOptions): Promi
   }
 
   if (options.pull) {
-    for (const pr of considered.filter((p) => p.state === "new" || p.state === "updated")) {
+    const changed = considered.filter((p) => p.state === "new" || p.state === "updated");
+    const tick = tally(context.progress, changed.length, "changed pull request");
+    for (const pr of changed) {
       try {
         await pullRequest(context, api, repo, pr.number);
+        tick();
         if (pr.state === "new") report.added++;
         else report.updated++;
       } catch (error) {

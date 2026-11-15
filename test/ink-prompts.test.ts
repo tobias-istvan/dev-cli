@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import { test } from "node:test";
-import { elapsed, highlight, pickerKey, pickMany, pickOne, pickRemote, type PickerState, running, terminal, text, windowStart, yesNo } from "../src/core/ink-prompts.ts";
+import { highlight, pickerKey, pickMany, pickOne, pickRemote, type PickerState, running, terminal, text, windowStart, yesNo } from "../src/core/ink-prompts.ts";
+import { elapsed } from "../src/core/progress.ts";
 import { rank, withInkPrompts } from "../src/core/prompt.ts";
 
 const repos = Array.from({ length: 40 }, (_, i) => ({ value: `acme/repo-${i}`, name: `acme/repo-${i}` }));
@@ -80,6 +81,7 @@ function fakeTerminal() {
   const stdout = Object.assign(new Writable({ write: (chunk, _encoding, next) => { screen += chunk.toString(); next(); } }), { isTTY: true, columns: 100, rows: 30 });
   terminal.stdin = stdin;
   terminal.stdout = stdout;
+  terminal.stderr = stdout;
   return {
     async type(...keys: string[]) {
       for (const key of keys) {
@@ -191,4 +193,11 @@ test("keys pressed during a step are swallowed, and Ctrl+C cancels it", async ()
   await tty.type("\u0003");
   await assert.rejects(step, /Cancelled/);
   assert.match(tty.screen(), /✖ Loading Confluence spaces cancelled after/);
+});
+
+test("a quick step with nothing to say leaves no line behind", async () => {
+  const tty = fakeTerminal();
+  await running("Pointing links at the local copies", async () => 3);
+  assert.doesNotMatch(tty.screen().split("\n").at(-1) ?? "", /Pointing links/);
+  assert.doesNotMatch(tty.screen(), /✔/);
 });

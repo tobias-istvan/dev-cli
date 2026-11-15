@@ -1,6 +1,7 @@
 import { Box, render, Text, useApp, useInput, useWindowSize, type Key } from "ink";
 import { createElement as h, Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DevError } from "./output.ts";
+import { elapsed } from "./progress.ts";
 
 /**
  * The same questions as prompt.ts, drawn with ink. An experiment, used by dev init only, for
@@ -112,14 +113,14 @@ class Cancelled extends DevError {
   }
 }
 
-/** Where questions are asked. Tests swap in their own streams. */
-export const terminal: { stdin: NodeJS.ReadableStream; stdout: NodeJS.WritableStream } = { stdin: process.stdin, stdout: process.stdout };
+/** Where questions are asked, and progress is drawn. Tests swap in their own streams. */
+export const terminal: { stdin: NodeJS.ReadableStream; stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream } = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr };
 
 /**
  * Ink guesses whether it can redraw from CI variables too, and in CI mode draws only the
  * last frame. dev has already checked for a terminal before asking, so it says so itself.
  */
-const drawing = () => ({ ...terminal, interactive: Boolean((terminal.stdout as { isTTY?: boolean }).isTTY) });
+const drawing = (on = terminal.stdout) => ({ stdin: terminal.stdin, stdout: on, stderr: terminal.stderr, interactive: Boolean((on as { isTTY?: boolean }).isTTY) });
 
 /** Mounts a question, waits for its answer, and leaves the answered line on screen. */
 async function ask<R>(element: ReactNode): Promise<R> {
@@ -304,23 +305,15 @@ export function yesNo(message: string, initial: boolean): Promise<boolean> {
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/** "850ms" under a second, then "4.2s", then "1m 05s". */
-export function elapsed(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const seconds = Math.floor(ms / 1000);
-  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-}
+type StepProps = { label: string; detail: string; started: number; status: "running" | "done" | "failed" | "cancelled"; summary?: string; keys: boolean; onCancel: () => void };
 
-type StepProps = { label: string; detail: string; started: number; status: "running" | "done" | "failed" | "cancelled"; summary?: string; onCancel: () => void };
-
-function Step({ label, detail, started, status, summary, onCancel }: StepProps) {
+function Step({ label, detail, started, status, summary, keys, onCancel }: StepProps) {
   const [now, setNow] = useState(Date.now());
   // Keys pressed while waiting would print over the spinner and then answer the next question
   // unseen, so they're swallowed. Ctrl+C still stops.
   useInput((input, key) => {
     if (key.ctrl && input === "c") onCancel();
-  }, { isActive: status === "running" });
+  }, { isActive: keys && status === "running" });
   useEffect(() => {
     if (status !== "running") return;
     const timer = setInterval(() => setNow(Date.now()), 80);
@@ -328,6 +321,8 @@ function Step({ label, detail, started, status, summary, onCancel }: StepProps) 
   }, [status]);
   const took = elapsed((status === "running" ? now : Date.now()) - started);
 
+  // Quick work with nothing to say leaves no line behind.
+  if (status === "done" && !summary && Date.now() - started < 1000) return null;
   if (status === "done") return h(Text, null, h(Text, { color: "green" }, "✔ "), summary ?? label, h(Text, { dimColor: true }, ` ${took}`));
   if (status !== "running") return h(Text, null, h(Text, { color: "red" }, "✖ "), label, h(Text, { dimColor: true }, ` ${status} after ${took}`));
   const frame = SPINNER[Math.floor((now - started) / 80) % SPINNER.length];
@@ -342,15 +337,20 @@ function Step({ label, detail, started, status, summary, onCancel }: StepProps) 
   );
 }
 
-/** Shows a spinner while `task` runs, then a line saying what it found, or that it failed. */
-export async function running<T>(label: string, task: (report: (detail: string) => void) => Promise<T>, done?: (result: T) => string): Promise<T> {
+/**
+ * Shows a spinner while `task` runs, then a line saying what it found, or that it failed.
+ * It draws on stderr, so stdout keeps only results, like JSON for a script.
+ */
+export async function running<T>(label: string, task: (report: (detail: string) => void) => Promise<T>, done?: (result: T) => string | undefined): Promise<T> {
   const started = Date.now();
   let detail = "";
   let cancel = () => {};
   const cancelled = new Promise<never>((_, reject) => { cancel = () => reject(new Cancelled()); });
-  const view = (status: StepProps["status"], summary?: string) => h(Step, { label, detail, started, status, summary, onCancel: cancel });
-  // Logs from the task print above the spinner.
-  const app = render(view("running"), { ...drawing(), exitOnCtrlC: false, patchConsole: true });
+  const view = (status: StepProps["status"], summary?: string) => h(Step, { label, detail, started, status, summary, keys, onCancel: cancel });
+  // Keys are only taken, and swallowed, when they come from a terminal. Logs from the task
+  // print above the spinner.
+  const keys = Boolean((terminal.stdin as { isTTY?: boolean }).isTTY);
+  const app = render(view("running"), { ...drawing(terminal.stderr), exitOnCtrlC: false, patchConsole: true });
   const finish = async (node: ReactNode) => {
     app.rerender(node);
     await app.waitUntilRenderFlush();
