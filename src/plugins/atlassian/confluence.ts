@@ -9,7 +9,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { localLookup } from "../../core/links.ts";
 import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, search as searchPrompt, searchRemote } from "../../core/prompt.ts";
-import { mirrorAttachments } from "./attachments.ts";
+import { mirrorAttachments } from "../../core/attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { convertStorageToMarkdown } from "./html.ts";
 

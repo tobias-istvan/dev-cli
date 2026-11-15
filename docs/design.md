@@ -345,8 +345,11 @@ aren't fetched again, and file links Notion signs for an hour are named, not wri
 GitHub Projects is a task source on the GitHub login, through GraphQL, which needs the
 `read:project` scope. Each item on a board in scope, whether an issue, a PR or a draft,
 becomes `github-projects/<owner>-<number>/<item>/item.md`, with the board's own fields,
-like Status or Iteration. An item counts as done when its status says so, or its issue or
-PR is closed. A field whose name mentions due or target date becomes the due date.
+like Status or Iteration, and the last 50 comments of an issue or PR. Attachments linked in
+the text are downloaded into the item's `attachments/` folder, with the mirror Jira and
+Confluence use, and never with the login: images through the signed addresses in GitHub's
+rendered HTML, other files only when they're public. An item counts as done when its status
+says so, or its issue or PR is closed. A field whose name mentions due or target date becomes the due date.
 
 ## What phase 4 taught the interface
 

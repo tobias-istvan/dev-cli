@@ -352,13 +352,21 @@ workspace's own repository. A bare `#12` isn't enough: it could be a pull reques
 
 A task source. Each item on a board, whether an issue, a pull request or a draft, goes in
 `github-projects/<owner>-<number>/<item>/item.md`, with the board's own fields, like Status,
-Iteration or Priority.
+Iteration or Priority, and an issue's or pull request's last 50 comments. Files attached in
+the description or comments are downloaded into the item's `attachments/` folder, and the
+text points to them; set `attachments: false` in the scope to leave them out.
 
 ```yaml
 scope:
   projects: [acme/3, me/7]   # boards, as owner/number from their URL
   assigned: me               # me (default) or any
+  attachments: true          # default
 ```
+
+Attachments are downloaded without your login, so it never leaves GitHub's API. Images work
+from private repositories too, through the short-lived addresses GitHub signs for them.
+Other files from a private repository need a browser login, so they keep their GitHub link
+and the sync warns about them.
 
 An item is done when its Status says so (Done, Closed, Complete, Shipped, Released, Merged)
 or its issue or pull request is closed. A field named like "Due" or "Target date" becomes its
