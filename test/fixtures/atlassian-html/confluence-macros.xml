@@ -1,0 +1,16 @@
+<ac:structured-macro ac:name="info"><ac:rich-text-body><p>Info with <ac:structured-macro ac:name="status"><ac:parameter ac:name="title">IN PROGRESS</ac:parameter><ac:parameter ac:name="colour">Blue</ac:parameter></ac:structured-macro> status</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="warning"><ac:rich-text-body><p>Careful &lt;here&gt;</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="panel"><ac:parameter ac:name="title">Panel &amp; title</ac:parameter><ac:rich-text-body><ac:structured-macro ac:name="note"><ac:rich-text-body><p>Nested note</p></ac:rich-text-body></ac:structured-macro></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="panel"><ac:rich-text-body><p>Untitled panel</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="expand"><ac:rich-text-body><p>Hidden</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="expand"><ac:parameter ac:name="title">More</ac:parameter><ac:rich-text-body><p>Shown <ac:link><ri:page ri:content-title="Other Page" /></ac:link></p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="details"><ac:rich-text-body><table><colgroup><col /><col /></colgroup><tbody><tr><th>Owner</th><td><ac:link><ri:user ri:account-id="abc" /></ac:link></td></tr><tr><th>Status</th><td><ac:structured-macro ac:name="status"><ac:parameter ac:name="title">DONE</ac:parameter></ac:structured-macro></td></tr></tbody></table></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="status"></ac:structured-macro>
+<ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">ACME-7</ac:parameter></ac:structured-macro>
+<ac:structured-macro ac:name="jira"><ac:parameter ac:name="jqlQuery">project = ACME</ac:parameter></ac:structured-macro>
+<ac:structured-macro ac:name="toc" />
+<ac:structured-macro ac:name="excerpt"><ac:rich-text-body><p>Excerpt body</p></ac:rich-text-body></ac:structured-macro>
+<ac:structured-macro ac:name="noformat"><ac:plain-text-body><![CDATA[raw <text>]]></ac:plain-text-body></ac:structured-macro>
+<ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><p>Left</p></ac:layout-cell><ac:layout-cell><p>Right <ac:inline-comment-marker ac:ref="r1">marked</ac:inline-comment-marker></p></ac:layout-cell></ac:layout-section></ac:layout>
+<p>Stray <ac:placeholder>type here</ac:placeholder> and <ri:space ri:space-key="X" />.</p>
+<table><tbody><tr><td><p>a</p><p>b</p></td><td>c</td></tr><tr><td>d</td><td>e</td></tr></tbody></table>
