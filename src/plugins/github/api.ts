@@ -54,6 +54,37 @@ export function tokenFor(credentials: Credentials): string {
   throw new DevError("The saved GitHub login is incomplete.", 'Run "dev login github" again.');
 }
 
+const MAX_ATTACHMENT = 25 * 1024 * 1024;
+
+/**
+ * An attachment on an issue, a PR or a comment, downloaded without the login: a public one
+ * redirects to storage, and a private image's address in the rendered HTML is signed for a
+ * few minutes. The token never leaves the API, so only GitHub's own hosts are fetched.
+ */
+export async function downloadAttachment(link: string): Promise<Buffer> {
+  const url = new URL(link);
+  const web = new URL(webBase());
+  const github = url.origin === web.origin || (url.protocol === "https:" && (url.hostname === "githubusercontent.com" || url.hostname.endsWith(".githubusercontent.com")));
+  if (!github || url.username || url.password) throw new Error("it isn't on GitHub");
+  const response = await boundedFetch(url, { headers: { "User-Agent": "dev-cli" } }, 5 * 60_000);
+  if (!response.ok) throw new Error(`GitHub answered ${response.status}${response.status === 404 ? ": the upload is gone, or it's a private repository's file, which needs a browser login" : ""}`);
+  if (/^text\/html/i.test(response.headers.get("content-type") ?? "")) throw new Error("GitHub answered with a sign-in page");
+  const reader = response.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_ATTACHMENT) throw new Error("it's over the 25 MiB download limit");
+      chunks.push(value);
+    }
+  } finally { await reader.cancel().catch(() => {}); }
+  return Buffer.concat(chunks);
+}
+
 export class GitHubApi {
   readonly token: string;
 

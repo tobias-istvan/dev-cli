@@ -3,18 +3,21 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, rename } from "node:fs/promises";
 import path from "node:path";
 import type { Service, ServiceContext, SyncReport } from "../types.ts";
+import { mirrorAttachments, type RemoteAttachment } from "../../core/attachments.ts";
 import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { DevError, describeError } from "../../core/output.ts";
 import { choose, chooseMany } from "../../core/prompt.ts";
 import { count, step, tally } from "../../core/progress.ts";
-import { GitHubApi } from "./api.ts";
+import { downloadAttachment, GitHubApi, webBase } from "./api.ts";
 
 /**
  * GitHub Projects: boards as a task source. Each item on a board, whether an issue, a pull
  * request or a draft, becomes github-projects/<owner>-<number>/<item>/item.md, with the
- * board's own fields, like Status, Iteration or Priority. The scope is a list of boards, as
- * owner/number, and whether to keep every item or only yours.
+ * board's own fields, like Status, Iteration or Priority, and an issue's or PR's latest
+ * comments. Files attached in the text are kept in the item's attachments/ folder, unless the
+ * scope says `attachments: false`. The scope is a list of boards, as owner/number, and
+ * whether to keep every item or only yours.
  *
  * Projects are only reachable through GraphQL, and need the read:project scope.
  */
@@ -22,6 +25,8 @@ import { GitHubApi } from "./api.ts";
 const SERVICE = "github:github-projects";
 const ITEM = "item.md";
 const DONE = /^(done|closed|complete(d)?|shipped|released|merged)$/i;
+/** Comments kept per item, the latest ones. The rest are on GitHub. */
+const COMMENTS = 50;
 
 interface Field {
   name?: string;
@@ -32,15 +37,24 @@ interface Field {
   field?: { name?: string };
 }
 
+interface Comment {
+  author?: { login: string } | null;
+  body?: string;
+  bodyHTML?: string;
+  createdAt?: string;
+}
+
 interface Content {
   __typename: "Issue" | "PullRequest" | "DraftIssue";
   number?: number;
   title: string;
   body?: string;
+  bodyHTML?: string;
   url?: string;
   state?: string;
   repository?: { nameWithOwner: string };
   assignees?: { nodes: Array<{ login: string }> };
+  comments?: { totalCount: number; nodes: Comment[] };
 }
 
 interface Item {
@@ -55,6 +69,8 @@ interface Board {
   url: string;
   items: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: Item[] };
 }
+
+const COMMENT_FIELDS = `comments(last: ${COMMENTS}) { totalCount nodes { author { login } body bodyHTML createdAt } }`;
 
 const BOARD_FIELDS = `
   title url
@@ -73,9 +89,9 @@ const BOARD_FIELDS = `
       }
       content {
         __typename
-        ... on Issue { number title body url state repository { nameWithOwner } assignees(first: 10) { nodes { login } } }
-        ... on PullRequest { number title body url state repository { nameWithOwner } assignees(first: 10) { nodes { login } } }
-        ... on DraftIssue { title body assignees(first: 10) { nodes { login } } }
+        ... on Issue { number title body bodyHTML url state repository { nameWithOwner } assignees(first: 10) { nodes { login } } ${COMMENT_FIELDS} }
+        ... on PullRequest { number title body bodyHTML url state repository { nameWithOwner } assignees(first: 10) { nodes { login } } ${COMMENT_FIELDS} }
+        ... on DraftIssue { title body bodyHTML assignees(first: 10) { nodes { login } } }
       }
     }
   }`;
@@ -140,6 +156,48 @@ function fieldsOf(item: Item): Record<string, string> {
   return fields;
 }
 
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/** Files attached in the text: uploads, older repository assets, and the old image host. */
+function attachmentPattern(): RegExp {
+  const web = webBase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:${web}/user-attachments/(?:assets|files)/|${web}/[\\w.-]+/[\\w.-]+/assets/\\d+/|https://user-images\\.githubusercontent\\.com/)[^\\s()<>"'\\]]+`, "g");
+}
+
+function parsed(address: string): URL | null {
+  try { return new URL(address); } catch { return null; }
+}
+
+/**
+ * The attachments linked in an item's text. A private image only downloads from its address
+ * in the rendered HTML, which is signed for a few minutes, so that's matched to the link by
+ * the upload's id. A file is named after its link, and an image after its alt text.
+ */
+function attachmentsIn(markdown: string, html: string): RemoteAttachment[] {
+  const signed = new Map<string, string>();
+  for (const match of html.matchAll(/\b(?:src|href)="([^"]+)"/g)) {
+    const address = (match[1] ?? "").replace(/&amp;/g, "&");
+    const id = address.includes("jwt=") ? parsed(address)?.pathname.match(UUID)?.[0] : undefined;
+    if (id) signed.set(id.toLowerCase(), address);
+  }
+  const found = new Map<string, RemoteAttachment>();
+  for (const match of markdown.matchAll(attachmentPattern())) {
+    const link = match[0];
+    const url = parsed(link);
+    if (!url || found.has(link)) continue;
+    const id = link.match(UUID)?.[0]?.toLowerCase();
+    const address = id ? signed.get(id) : undefined;
+    let last = url.pathname.split("/").pop() ?? "";
+    try { last = decodeURIComponent(last); } catch {}
+    const alt = markdown.slice(0, match.index).match(/!\[([^\]]*)\]\($/)?.[1]?.trim();
+    let title = /\.\w+$/.test(last) ? last : alt || "image";
+    const extension = address ? path.extname(parsed(address)?.pathname ?? "") : "";
+    if (extension && !title.toLowerCase().endsWith(extension.toLowerCase())) title += extension;
+    found.set(link, { key: link, title, link: address ?? link, version: 1 });
+  }
+  return [...found.values()];
+}
+
 async function localItems(context: ServiceContext): Promise<Array<{ path: string; data: Record<string, unknown> }>> {
   const base = folder(context);
   if (!existsSync(base)) return [];
@@ -200,8 +258,26 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
       const relative = `${boardDir}/${dir}/${ITEM}`;
       kept.add(relative);
       const due = Object.entries(fields).find(([name]) => /due|deadline|target date|end date/i.test(name))?.[1] ?? "";
+      const comments = content.comments?.nodes ?? [];
+      const total = content.comments?.totalCount ?? 0;
       try {
         const target = path.join(folder(context), boardDir, dir, ITEM);
+        // Attachments sit next to the item, and its text points at them.
+        let failed = 0;
+        const files =
+          context.scope.attachments !== false
+            ? await mirrorAttachments(
+                { download: downloadAttachment },
+                path.dirname(target),
+                attachmentsIn([content.body ?? "", ...comments.map((c) => c.body ?? "")].join("\n"), [content.bodyHTML ?? "", ...comments.map((c) => c.bodyHTML ?? "")].join("\n")),
+                (message) => {
+                  failed++;
+                  context.out.warn(`  ${id}: ${message}`);
+                },
+                false,
+              )
+            : new Map<string, string>();
+        const pointLocal = (text: string) => (files.size === 0 ? text : text.replace(attachmentPattern(), (link) => (files.has(link) ? encodeURI(files.get(link)!) : link)));
         const result = await writeItem(
           target,
           {
@@ -219,6 +295,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
             mine: assignees.includes(me),
             done,
             due: due.slice(0, 10),
+            ...(context.scope.attachments !== false ? { attachments: files.size, ...(failed > 0 ? { attachmentsFailed: failed } : {}) } : {}),
             inScope: true,
             via: "scope",
           },
@@ -231,7 +308,18 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
             "",
             "## Description",
             "",
-            (content.body ?? "").trim() || "_No description._",
+            pointLocal(content.body ?? "").trim() || "_No description._",
+            ...(content.__typename === "DraftIssue"
+              ? []
+              : [
+                  "",
+                  `## Comments (${total})`,
+                  "",
+                  ...(total > comments.length ? [`_The last ${comments.length}; the rest are on GitHub: ${content.url}_`, ""] : []),
+                  comments.length > 0
+                    ? comments.map((c) => `### ${c.author?.login ?? "unknown"} · ${(c.createdAt ?? "").slice(0, 16).replace("T", " ")}\n\n${pointLocal(c.body ?? "").trim() || "_(empty)_"}`).join("\n\n")
+                    : "_No comments._",
+                ]),
           ].join("\n"), target),
         );
         if (result === "added") report.added++;
@@ -295,7 +383,7 @@ export const projects: Service = {
   id: "github-projects",
   title: "GitHub Projects",
   index: INDEX,
-  description: "Project boards: their items and fields",
+  description: "Project boards: their items, fields, comments and attachments",
   role: "connected",
 
   scope: {
@@ -317,6 +405,7 @@ export const projects: Service = {
         return [{ message: '"projects" should list boards as owner/number, like [acme/3].' }];
       }
       if (scope.assigned !== undefined && scope.assigned !== "me" && scope.assigned !== "any") return [{ message: '"assigned" should be me or any.' }];
+      if (scope.attachments !== undefined && typeof scope.attachments !== "boolean") return [{ message: '"attachments" should be true or false.' }];
       return [];
     },
     add(scope, items) {
