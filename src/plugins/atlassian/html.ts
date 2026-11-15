@@ -155,7 +155,12 @@ export function normalizeTables(markup: Markup): void {
 
     const rows = all(markup, "tr", table);
     const [firstRow] = rows;
-    if (!firstRow) continue;
+    if (!firstRow) {
+      // The plugin throws on a table without rows, failing the whole page. Keep what's
+      // in it, like a caption, and drop the table.
+      replaceWith(markup, table, inner(markup, table) ?? "");
+      continue;
+    }
 
     const firstRowCells = children(markup, firstRow, "th, td");
     if (firstRowCells.length === 0) continue;
