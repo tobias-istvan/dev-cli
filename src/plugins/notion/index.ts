@@ -8,6 +8,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { localLookup, localizeFile, scopeCommand } from "../../core/links.ts";
 import { describeError, DevError, OutsideScope } from "../../core/output.ts";
 import { chooseMany, secret } from "../../core/prompt.ts";
+import { count, step } from "../../core/progress.ts";
 import { NotionApi, normaliseId } from "./api.ts";
 import { blocksToMarkdown, richText, type Block, type RichText } from "./markdown.ts";
 
@@ -331,7 +332,12 @@ export const notionService: Service = {
     },
     async choose(context) {
       const notion = api(context);
-      const found = await notion.all<{ object: string; id: string; title?: RichText[]; properties?: Page["properties"] }>("POST", "/search", {});
+      const found = await step(
+        context.out,
+        "Finding the pages and databases the integration can see",
+        (report) => notion.all<{ object: string; id: string; title?: RichText[]; properties?: Page["properties"] }>("POST", "/search", {}, (n) => report(`${n} so far`)),
+        (results) => `Found ${count(results.length, "page or database", "pages and databases")}`,
+      );
       const options = found
         .filter((r) => r.object === "database" || r.object === "page")
         .map((r) => ({ value: `${r.object}:${r.id}`, name: `${r.object === "database" ? "Database" : "Page"}: ${r.object === "database" ? richText(r.title) : titleOf(r as unknown as Page)}` }));

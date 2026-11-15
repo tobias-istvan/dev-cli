@@ -6,6 +6,10 @@ import { gfm } from "turndown-plugin-gfm";
 
 export type CheerioApi = ReturnType<typeof load>;
 
+/** The parts of a DOM node the rules below read. The lib has no DOM types to give them. */
+type DomNode = { nodeName: string; firstChild: DomNode | null; parentNode: { childNodes: ArrayLike<unknown> } | null };
+const dom = (node: unknown) => node as DomNode;
+
 /**
  * A turndown instance configured the way both the Confluence and Jira syncs
  * need it. Kept here rather than in either caller because the table handling
@@ -22,9 +26,9 @@ export function createTurndownService(): TurndownService {
   service.keep(["details", "summary"]);
 
   service.addRule("fencedCodeBlockWithLanguage", {
-    filter: (node) => node.nodeName === "PRE" && node.firstChild?.nodeName === "CODE",
+    filter: (node) => dom(node).nodeName === "PRE" && dom(node).firstChild?.nodeName === "CODE",
     replacement: (_content, node) => {
-      const codeEl = node.firstChild as unknown as { getAttribute(name: string): string | null; textContent: string | null };
+      const codeEl = dom(node).firstChild as unknown as { getAttribute(name: string): string | null; textContent: string | null };
       const language = (codeEl.getAttribute("class") || "").replace("language-", "");
       const code = codeEl.textContent || "";
       return `\n\n\`\`\`${language}\n${code.replace(/\n$/, "")}\n\`\`\`\n\n`;
@@ -40,7 +44,8 @@ export function createTurndownService(): TurndownService {
     filter: ["th", "td"],
     replacement: (content, node) => {
       const collapsed = content.trim().replace(/\n+/g, "<br>");
-      const siblings = node.parentNode ? Array.from(node.parentNode.childNodes) : [];
+      const parent = dom(node).parentNode;
+      const siblings = parent ? Array.from(parent.childNodes) : [];
       const isFirst = siblings.indexOf(node) === 0;
       return (isFirst ? "| " : " ") + collapsed + " |";
     },
