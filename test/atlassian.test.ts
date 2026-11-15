@@ -486,4 +486,9 @@ test("indexes say which items are yours and why each is here, and task list answ
   assert.match((await dev(root, ["task", "list", "--all"])).out, /ABC-9 {2}\[To Do\] {2}The epic {2}· parent/);
   const json = JSON.parse((await dev(root, ["task", "list", "--json"])).out);
   assert.deepEqual(json[0].tasks.map((t: { id: string }) => t.id), ["ABC-1", "ABC-2"]);
+
+  // Refreshing first tells whoever's waiting on stderr, and stdout stays only JSON.
+  const refreshed = await dev(root, ["task", "list", "--json", "--refresh"]);
+  assert.deepEqual(JSON.parse(refreshed.out)[0].tasks.map((t: { id: string }) => t.id), ["ABC-1", "ABC-2"]);
+  assert.match(refreshed.err, /^Syncing Jira\.\.\.$/m);
 });

@@ -8,7 +8,7 @@ import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matt
 import { buildIndex } from "../../core/indexes.ts";
 import { DevError, describeError } from "../../core/output.ts";
 import { choose, chooseMany } from "../../core/prompt.ts";
-import { count, step } from "../../core/progress.ts";
+import { count, step, tally } from "../../core/progress.ts";
 import { downloadAttachment, GitHubApi, webBase } from "./api.ts";
 
 /**
@@ -237,13 +237,16 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
     const boardDir = `${owner}-${number}`;
     let board: { title: string; url: string; items: Item[] };
     try {
+      context.progress(`reading board ${owner}/${number}`);
       board = await boardItems(api, owner, number);
     } catch (error) {
       failedBoards.add(`${owner}/${number}`);
       report.failed.push({ id: `${owner}/${number}`, reason: describeError(error) });
       continue;
     }
+    const tick = tally(context.progress, board.items.length, "item", undefined, `${board.title}: `);
     for (const item of board.items) {
+      tick();
       const content = item.content;
       if (!content) continue;
       const assignees = (content.assignees?.nodes ?? []).map((a) => a.login);

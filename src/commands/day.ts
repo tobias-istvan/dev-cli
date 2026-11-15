@@ -6,6 +6,7 @@ import type { Output } from "../plugins/types.ts";
 import { buildSnapshot, today, updateBase, writeSummary } from "../core/day.ts";
 import { loadConfig, type ProjectConfig } from "../core/project-config.ts";
 import { DevError } from "../core/output.ts";
+import { step } from "../core/progress.ts";
 import { describeRefresh, markRefresh, refreshState, snapshotTime, time } from "../core/refresh.ts";
 import { enabledServices } from "../core/scaffold.ts";
 import { repositoryDir } from "../core/worktree.ts";
@@ -35,8 +36,7 @@ async function refresh(root: string, config: ProjectConfig, registry: Registry, 
   if (options.sync) {
     if (existsSync(path.join(repositoryDir(root), ".git"))) {
       try {
-        const update = await updateBase(root);
-        out.info(
+        await step(out, "Updating the code", () => updateBase(root), (update) =>
           !update.fetched
             ? `Code: the clone in repository/ has no remote, so there was nothing to fetch. Worktrees start from the local ${update.branch}.`
             : update.skipped
@@ -51,7 +51,8 @@ async function refresh(root: string, config: ProjectConfig, registry: Registry, 
     ok = (await syncServices(root, config, registry, out, enabledServices(config, registry), { referenced: options.referenced })) && ok;
   }
 
-  await writeFile(path.join(root, "snapshot.md"), await buildSnapshot(root, config, registry, out, today()));
+  const snapshot = await step(out, "Writing snapshot.md", () => buildSnapshot(root, config, registry, out, today()));
+  await writeFile(path.join(root, "snapshot.md"), snapshot);
   out.info(`${ok ? "Done" : "Done, with failures"}: wrote snapshot.md.${options.sync ? " Review the synced changes before committing them." : ""}`);
   return ok;
 }

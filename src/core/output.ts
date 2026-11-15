@@ -30,6 +30,7 @@ export class OutsideScope extends DevError {
 export const consoleOutput: Output = {
   info: (message) => console.log(message),
   warn: (message) => console.error(message),
+  progress: (message) => console.error(message),
 };
 
 export function formatProblems(problems: Problem[]): string {

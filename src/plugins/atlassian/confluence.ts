@@ -9,7 +9,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { localLookup } from "../../core/links.ts";
 import { DevError, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, search as searchPrompt, searchRemote } from "../../core/prompt.ts";
-import { count, step } from "../../core/progress.ts";
+import { count, step, tally } from "../../core/progress.ts";
 import { mirrorAttachments } from "../../core/attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { convertStorageToMarkdown } from "./html.ts";
@@ -344,6 +344,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const ids = await allRoots(api, context.scope);
   const total: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
 
+  const tick = tally(context.progress, ids.length, "page tree");
   for (const id of ids) {
     try {
       const result = await syncTree(context, api, id, { withChildren: true, via: "scope", attachments: context.scope.attachments !== false });
@@ -355,6 +356,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
     } catch (error) {
       total.failed.push({ id, reason: describeError(error) });
     }
+    tick();
   }
 
   // Trees whose root left the scope stay, marked as outside it. Files are cheap, and history matters.
@@ -435,6 +437,7 @@ async function refresh(context: ServiceContext): Promise<SyncReport> {
   const limit = limiter(4);
   const spaceKeys = new Map<string, Promise<string>>();
 
+  const tick = tally(context.progress, pages.length, "page");
   await Promise.all(
     pages.map((local) =>
       limit(async () => {
@@ -464,7 +467,7 @@ async function refresh(context: ServiceContext): Promise<SyncReport> {
         } catch (error) {
           report.failed.push({ id: `${String(local.data.title)} (${id})`, reason: describeError(error) });
         }
-      }),
+      }).finally(tick),
     ),
   );
   index(context);

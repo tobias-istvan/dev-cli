@@ -30,7 +30,7 @@ const fixture = () => mkdtempSync(path.join(root, "case-"));
 const registry = await loadRegistry();
 const quiet = { info() {}, warn() {} };
 function context(dir: string, service: string, scope: Record<string, unknown>): ServiceContext {
-  return { root: dir, folder: path.join(dir, service), interactive: false, scope, settings: { fetch: "within-scope", sync: "full" }, credentials: () => ({ token: "synthetic", email: "test@example.test", site: "https://service.invalid" }), out: quiet, references: async () => [], localize: async (body) => body };
+  return { root: dir, folder: path.join(dir, service), interactive: false, scope, settings: { fetch: "within-scope", sync: "full" }, credentials: () => ({ token: "synthetic", email: "test@example.test", site: "https://service.invalid" }), out: quiet, references: async () => [], localize: async (body) => body, progress() {} };
 }
 
 test("compact API writes and commented mutations never receive read permission", () => {

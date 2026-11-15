@@ -8,6 +8,7 @@ import path from "node:path";
 import type { Output, Reference, ServiceEntry, SyncReport } from "../plugins/types.ts";
 import { workspaceServiceContext } from "../core/context.ts";
 import { DevError, NotFound, OutsideScope } from "../core/output.ts";
+import { count, step } from "../core/progress.ts";
 import { describeRefresh, markRefresh, refreshState } from "../core/refresh.ts";
 import type { ProjectConfig } from "../core/project-config.ts";
 import { loadConfig } from "../core/project-config.ts";
@@ -105,17 +106,24 @@ async function sweep(root: string, config: ProjectConfig, registry: Registry, ou
     const before = await localFiles(root, name);
     let fetched = 0;
     const outside: Array<{ reference: Reference; sources: string[] }> = [];
-    for (const { reference, sources } of references.values()) {
-      try {
-        if (await links.local?.(context, reference)) continue;
-        await links.fetch(context, reference);
-      } catch (error) {
-        if (error instanceof OutsideScope) {
-          if (!reference.uncertain) outside.push({ reference, sources: [...sources].sort() });
+    if (references.size > 0) {
+      await step(out, `Following links to ${entry.service.title}`, async (report) => {
+        let done = 0;
+        for (const { reference, sources } of references.values()) {
+          report(`${done++} of ${count(references.size, "link")}`);
+          context.progress = (detail) => report(`${done} of ${count(references.size, "link")}, ${detail}`);
+          try {
+            if (await links.local?.(context, reference)) continue;
+            await links.fetch(context, reference);
+          } catch (error) {
+            if (error instanceof OutsideScope) {
+              if (!reference.uncertain) outside.push({ reference, sources: [...sources].sort() });
+            }
+            // A link to something deleted is the page's problem, not a failed sync.
+            else if (!(error instanceof NotFound)) { ok = false; out.warn(`  ${entry.service.title}: couldn't fetch ${reference.id}. ${(error as Error).message}`); }
+          }
         }
-        // A link to something deleted is the page's problem, not a failed sync.
-        else if (!(error instanceof NotFound)) { ok = false; out.warn(`  ${entry.service.title}: couldn't fetch ${reference.id}. ${(error as Error).message}`); }
-      }
+      });
     }
     buildServiceIndex(root, entry.service);
     fetched = Math.max(0, (await localFiles(root, name)) - before);
@@ -140,12 +148,13 @@ async function sweep(root: string, config: ProjectConfig, registry: Registry, ou
  */
 async function localizeFiles(root: string, config: ProjectConfig, registry: Registry, out: Output): Promise<void> {
   const localize = createLocalizer({ root, config, registry, out, contextFor: (entry) => workspaceServiceContext(root, entry, config, registry, out) });
-  for (const entry of enabledServices(config, registry)) {
-    if (entry.service.role !== "connected") continue;
-    for (const file of serviceFiles(root, entry.service)) {
+  const files = enabledServices(config, registry).filter((entry) => entry.service.role === "connected").flatMap((entry) => serviceFiles(root, entry.service));
+  await step(out, "Pointing links at the local copies", async (report) => {
+    for (const [i, file] of files.entries()) {
+      report(`${i} of ${count(files.length, "file")}`);
       await localizeFile(path.join(root, file), localize);
     }
-  }
+  });
 }
 
 async function localFiles(root: string, folder: string): Promise<number> {
@@ -167,8 +176,13 @@ export async function syncServices(root: string, config: ProjectConfig, registry
       continue;
     }
     try {
-      const report = await run(workspaceServiceContext(root, entry, config, registry, out), { full: false });
-      out.info(`${entry.service.title}${referenced ? " (referenced only)" : ""}: ${describe(report)}.`);
+      const title = `${entry.service.title}${referenced ? " (referenced only)" : ""}`;
+      const report = await step(
+        out,
+        `Syncing ${title}`,
+        (progress) => run({ ...workspaceServiceContext(root, entry, config, registry, out), progress }, { full: false }),
+        (result) => `${title}: ${describe(result)}.`,
+      );
       for (const failure of report.failed) out.warn(`  ${failure.id}: ${failure.reason}`);
       for (const warning of report.warnings ?? []) out.warn(`  ${warning}`);
       if (report.failed.length > 0) ok = false;

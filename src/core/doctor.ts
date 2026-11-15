@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Output, Plugin, Problem } from "../plugins/types.ts";
 import type { Registry } from "../plugins/registry.ts";
 import { pluginContext, serviceContext } from "./context.ts";
+import { step } from "./progress.ts";
 import { loadCredentials, looseWarning } from "./credentials.ts";
 import { configPath, parseConfig } from "./project-config.ts";
 import { type CommandRow, generatedFiles } from "./scaffold.ts";
@@ -64,7 +65,8 @@ export async function doctor(root: string, registry: Registry, out: Output, opti
 
     if (entry.service.doctor) {
       try {
-        problems.push(...(await entry.service.doctor(serviceContext(root, entry, scope, out))));
+        const doctor = entry.service.doctor;
+        problems.push(...(await step(out, `Checking ${entry.service.title}`, (progress) => doctor({ ...serviceContext(root, entry, scope, out), progress }))));
       } catch (error) {
         problems.push({ message: `${key}'s own checks failed: ${(error as Error).message}` });
       }
@@ -85,7 +87,8 @@ export async function doctor(root: string, registry: Registry, out: Output, opti
     if (options.offline) continue;
 
     try {
-      const status = await plugin.login.check(pluginContext(root, out), saved.credentials);
+      const credentials = saved.credentials;
+      const status = await step(out, `Checking the ${plugin.title} login`, () => plugin.login.check(pluginContext(root, out), credentials));
       if (status.ok) {
         notes.push(`${plugin.title}: logged in${status.account ? ` as ${status.account}` : ""}.`);
       } else {

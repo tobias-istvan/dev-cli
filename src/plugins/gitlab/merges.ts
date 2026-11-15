@@ -9,6 +9,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { GitLabApi, projectId } from "./api.ts";
 import { describeError } from "../../core/output.ts";
+import { tally } from "../../core/progress.ts";
 
 /**
  * Other people's merge requests, pulled into merge-requests/<iid>/ for review, the GitLab
@@ -190,9 +191,12 @@ export async function pollMerges(context: ServiceContext, options: { pull: boole
   }
 
   if (options.pull) {
-    for (const mr of considered.filter((m) => m.state === "new" || m.state === "updated")) {
+    const changed = considered.filter((m) => m.state === "new" || m.state === "updated");
+    const tick = tally(context.progress, changed.length, "changed merge request");
+    for (const mr of changed) {
       try {
         await pullMerge(context, api, repo, mr.number);
+        tick();
         if (mr.state === "new") report.added++;
         else report.updated++;
       } catch (error) {

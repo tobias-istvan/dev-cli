@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 import { setTimeout as wait } from "node:timers/promises";
 import { test } from "node:test";
-import { elapsed, highlight, pickerKey, pickMany, pickOne, pickRemote, type PickerState, running, terminal, text, windowStart, yesNo } from "../src/core/ink-prompts.ts";
+import { highlight, pickerKey, pickMany, pickOne, pickRemote, type PickerState, running, terminal, text, windowStart, yesNo } from "../src/core/ink-prompts.ts";
+import { elapsed } from "../src/core/progress.ts";
 import { rank, withInkPrompts } from "../src/core/prompt.ts";
 
 const repos = Array.from({ length: 40 }, (_, i) => ({ value: `acme/repo-${i}`, name: `acme/repo-${i}` }));
@@ -73,6 +74,8 @@ test("matched letters are marked, whole words first, then letters in order", () 
   assert.equal(highlight("des sys", "Design System").map((p) => p.text).join(""), "Design System");
 });
 
+let interrupts = 0;
+
 /** A terminal for ink to draw on and read keys from, like a person at a keyboard. */
 function fakeTerminal() {
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
@@ -80,6 +83,9 @@ function fakeTerminal() {
   const stdout = Object.assign(new Writable({ write: (chunk, _encoding, next) => { screen += chunk.toString(); next(); } }), { isTTY: true, columns: 100, rows: 30 });
   terminal.stdin = stdin;
   terminal.stdout = stdout;
+  terminal.stderr = stdout;
+  interrupts = 0;
+  terminal.interrupt = () => { interrupts++; };
   return {
     async type(...keys: string[]) {
       for (const key of keys) {
@@ -191,4 +197,13 @@ test("keys pressed during a step are swallowed, and Ctrl+C cancels it", async ()
   await tty.type("\u0003");
   await assert.rejects(step, /Cancelled/);
   assert.match(tty.screen(), /✖ Loading Confluence spaces cancelled after/);
+  // Then dev is interrupted, as Ctrl+C would have done without the spinner.
+  assert.equal(interrupts, 1);
+});
+
+test("a quick step with nothing to say leaves no line behind", async () => {
+  const tty = fakeTerminal();
+  await running("Pointing links at the local copies", async () => 3);
+  assert.doesNotMatch(tty.screen().split("\n").at(-1) ?? "", /Pointing links/);
+  assert.doesNotMatch(tty.screen(), /✔/);
 });

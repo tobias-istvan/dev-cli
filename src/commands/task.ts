@@ -5,6 +5,7 @@ import type { Registry } from "../plugins/registry.ts";
 import type { Output, Reference, ServiceEntry, TaskContext, TaskItem } from "../plugins/types.ts";
 import { workspaceServiceContext } from "../core/context.ts";
 import { DevError } from "../core/output.ts";
+import { count, step } from "../core/progress.ts";
 import { loadConfig, type ProjectConfig } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
 import { legacyTaskId, taskDir, taskId, writeTaskNotes } from "../core/tasks.ts";
@@ -70,20 +71,27 @@ async function resolve(root: string, config: ProjectConfig, registry: Registry, 
     return { entry, reference, context: { title: local.title, files, references: [], notFetched } };
   }
   if (!links) return null;
-  const file = await links.fetch(context, reference);
-  const task = entry.service.contribute?.taskStart
-    ? await entry.service.contribute.taskStart(context, reference)
-    : { title: reference.id, files: [path.relative(root, file!)], references: [] };
+  const task = await step(out, `Fetching ${reference.id} from ${entry.service.title}`, async (progress) => {
+    const file = await links.fetch({ ...context, progress }, reference);
+    return entry.service.contribute?.taskStart
+      ? await entry.service.contribute.taskStart({ ...context, progress }, reference)
+      : { title: reference.id, files: [path.relative(root, file!)], references: [] as Reference[] };
+  });
 
   // One step further: what the item links to, like a parent's spec.
-  for (const next of task.references) {
-    const owner = enabledServices(config, registry).find((e) => e.key === next.service);
-    if (!owner?.service.links) continue;
-    try {
-      task.files.push(path.relative(root, await owner.service.links.fetch(workspaceServiceContext(root, owner, config, registry, out), next)));
-    } catch (error) {
-      out.warn(`Couldn't fetch ${next.id} from ${owner.service.title}: ${(error as Error).message}`);
-    }
+  if (task.references.length > 0) {
+    await step(out, `Fetching what ${reference.id} links to`, async (report) => {
+      for (const [i, next] of task.references.entries()) {
+        report(`${i} of ${count(task.references.length, "link")}: ${next.id}`);
+        const owner = enabledServices(config, registry).find((e) => e.key === next.service);
+        if (!owner?.service.links) continue;
+        try {
+          task.files.push(path.relative(root, await owner.service.links.fetch(workspaceServiceContext(root, owner, config, registry, out), next)));
+        } catch (error) {
+          out.warn(`Couldn't fetch ${next.id} from ${owner.service.title}: ${(error as Error).message}`);
+        }
+      }
+    });
   }
   task.files.push(...choices.flatMap((candidate) => candidate.local ? [candidate.local.file] : []));
   return { entry, reference, context: task };
@@ -102,7 +110,7 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   const type = options.type ?? resolved?.context.type ?? "feature";
 
   const pattern = config.conventions.branch ?? DEFAULT_BRANCH_PATTERN;
-  const worktree = await ensureWorktree(root, id, branchName(pattern, { type, id, slug: slugify(title) }), options.base);
+  const worktree = await step(out, `Creating worktrees/${id}`, () => ensureWorktree(root, id, branchName(pattern, { type, id, slug: slugify(title) }), options.base));
   const copies = await copyLocalFiles(repo, worktree.path, config.conventions.worktreeFiles ?? []);
 
   const template = [".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md", "PULL_REQUEST_TEMPLATE.md"].find((f) => existsSync(path.join(repo, f))) ?? null;
@@ -154,7 +162,7 @@ export async function runTaskStatus(out: Output, id?: string): Promise<void> {
 export async function runTaskCleanup(out: Output, options: { remove?: boolean }): Promise<void> {
   const root = requireWorkspaceRoot();
   const base = await defaultBranch(requireClone(root));
-  const remote = await fetchRemote(requireClone(root));
+  const remote = await step(out, "Fetching from the repository's remote", () => fetchRemote(requireClone(root)));
   const fetched = remote === "fetched";
   if (remote === "unreachable") out.warn("Couldn't reach the repository's remote, so only worktrees whose commits are all in the base count as safe.");
   const { states, broken } = await inspectWorktrees(root, base);
@@ -212,7 +220,7 @@ export async function runTaskList(registry: Registry, out: Output, options: List
 
   if (options.refresh) {
     const { syncServices } = await import("./sync.ts");
-    const refreshOut: Output = options.json ? { info: (s) => console.error(s), warn: (s) => console.error(s) } : out;
+    const refreshOut: Output = options.json ? { info: (s) => console.error(s), warn: (s) => console.error(s), progress: (s) => console.error(s) } : out;
     if (!await withRefresh(root, "dev task list --refresh", () => syncServices(root, config, registry, refreshOut, sources))) process.exitCode = 1;
   }
 

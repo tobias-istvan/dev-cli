@@ -7,7 +7,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { describeOutside } from "../../core/links.ts";
 import { DevError, NotFound, OutsideScope, describeError } from "../../core/output.ts";
 import { ask, choose, search as searchPrompt } from "../../core/prompt.ts";
-import { count, step } from "../../core/progress.ts";
+import { count, step, tally } from "../../core/progress.ts";
 import { mirrorAttachments } from "../../core/attachments.ts";
 import { AtlassianClient, limiter, siteFrom } from "./client.ts";
 import { htmlToMarkdown } from "./html.ts";
@@ -259,12 +259,14 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const api = client(context);
   const report: SyncReport = { added: 0, updated: 0, removed: 0, failed: [] };
 
+  context.progress("searching for tickets");
   const [found, ids, local] = await Promise.all([search(api, jql, LIST_FIELDS), lookups(api), localItems(context)]);
   const known = new Map(local.map((item) => [item.key, item.data]));
   const inScope = new Set(found.map((issue) => issue.key));
   boundaries.set(context, boundaryOf(context, inScope));
   const limit = limiter(4);
 
+  const tick = tally(context.progress, found.length, "ticket");
   await Promise.all(
     found.map((summary) =>
       limit(async () => {
@@ -280,7 +282,7 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
         } catch (error) {
           report.failed.push({ id: summary.key, reason: describeError(error) });
         }
-      }),
+      }).finally(tick),
     ),
   );
 
