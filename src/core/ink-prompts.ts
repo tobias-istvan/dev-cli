@@ -114,7 +114,12 @@ class Cancelled extends DevError {
 }
 
 /** Where questions are asked, and progress is drawn. Tests swap in their own streams. */
-export const terminal: { stdin: NodeJS.ReadableStream; stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream } = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr };
+export const terminal: { stdin: NodeJS.ReadableStream; stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream; interrupt: () => void } = {
+  stdin: process.stdin,
+  stdout: process.stdout,
+  stderr: process.stderr,
+  interrupt: () => process.kill(process.pid, "SIGINT"),
+};
 
 /**
  * Ink guesses whether it can redraw from CI variables too, and in CI mode draws only the
@@ -369,6 +374,14 @@ export async function running<T>(label: string, task: (report: (detail: string) 
     return result;
   } catch (error) {
     await finish(view(error instanceof Cancelled ? "cancelled" : "failed"));
+    // Swallowing keys means the terminal sends no SIGINT of its own, so Ctrl+C sends one, as
+    // it would have: dev stops there, whatever it was in the middle of, and the sync lock is
+    // released. The error is only for when something keeps the process alive.
+    if (error instanceof Cancelled) {
+      terminal.interrupt();
+      // The signal lands on the next turn; until then, nothing should report this as a failure.
+      await new Promise((resolve) => setTimeout(resolve, 1000).unref());
+    }
     throw error;
   }
 }

@@ -74,6 +74,8 @@ test("matched letters are marked, whole words first, then letters in order", () 
   assert.equal(highlight("des sys", "Design System").map((p) => p.text).join(""), "Design System");
 });
 
+let interrupts = 0;
+
 /** A terminal for ink to draw on and read keys from, like a person at a keyboard. */
 function fakeTerminal() {
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
@@ -82,6 +84,8 @@ function fakeTerminal() {
   terminal.stdin = stdin;
   terminal.stdout = stdout;
   terminal.stderr = stdout;
+  interrupts = 0;
+  terminal.interrupt = () => { interrupts++; };
   return {
     async type(...keys: string[]) {
       for (const key of keys) {
@@ -193,6 +197,8 @@ test("keys pressed during a step are swallowed, and Ctrl+C cancels it", async ()
   await tty.type("\u0003");
   await assert.rejects(step, /Cancelled/);
   assert.match(tty.screen(), /✖ Loading Confluence spaces cancelled after/);
+  // Then dev is interrupted, as Ctrl+C would have done without the spinner.
+  assert.equal(interrupts, 1);
 });
 
 test("a quick step with nothing to say leaves no line behind", async () => {
