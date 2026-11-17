@@ -8,6 +8,7 @@ and hand it over.
 This document sets out the decisions that shape everything else.
 
 Status: phase 5 complete: Figma, GitLab, Notion and GitHub Projects. Open questions are at the end.
+What comes next, the task workflow, is in [workflow.md](workflow.md).
 
 ## Goals
 
