@@ -1,6 +1,7 @@
 name: Publish
-# Publishing a GitHub release for a v* tag publishes that version to npm. npm trusts this workflow
+# Publishing a GitHub release for a v* tag stages that version on npm. npm trusts this workflow
 # (trusted publishing), so no npm token is stored anywhere and every version gets provenance.
+# A staged version goes live only once the maintainer approves it with 2FA: npm stage approve.
 on:
   release:
     types: [published]
@@ -27,18 +28,18 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME doesn't match package.json version $version"
             exit 1
           fi
-      # Trusted publishing needs npm 11.5.1 or later
-      - run: npm install -g npm@^11.5.1
+      # Staged publishing needs a recent npm
+      - run: npm install -g npm@^11.19.1
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:package
       # A prerelease goes out under its own dist-tag (0.3.0-alpha.2 as alpha), so latest stays stable
-      - name: Publish
+      - name: Stage
         run: |
           version=$(node -p "require('./package.json').version")
           case "$version" in
             *-*) tag=$(echo "${version#*-}" | cut -d. -f1) ;;
             *) tag=latest ;;
           esac
-          npm publish --tag "$tag"
+          npm stage publish --provenance --tag "$tag"
