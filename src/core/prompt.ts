@@ -13,8 +13,7 @@ function requireTerminal(flag: string): void {
 }
 
 /**
- * Which look the questions have. "ink" is an experiment, turned on by dev init alone through
- * withInkPrompts. DEV_PROMPTS=classic turns it off.
+ * Which look the questions have. "ink" is turned on by dev init alone, through withInkPrompts. DEV_PROMPTS=classic turns it off.
  */
 let style: "classic" | "ink" = "classic";
 

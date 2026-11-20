@@ -4,8 +4,8 @@ import { DevError } from "./output.ts";
 import { elapsed } from "./progress.ts";
 
 /**
- * The same questions as prompt.ts, drawn with ink. An experiment, used by dev init only, for
- * a better time with long lists: every list filters as you type, scrolls with the arrows and
+ * The same questions as prompt.ts, drawn with ink. Used by dev init only, for a
+ * better time with long lists: every list filters as you type, scrolls with the arrows and
  * Page Up/Down, shows where you are in it, and marks the letters that matched.
  * Written with createElement rather than JSX, so the files stay plain TypeScript.
  */
