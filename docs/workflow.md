@@ -156,35 +156,46 @@ snapshot and session start say so.
 
 ### What a sync records
 
-When a sync writes an item, it has the old file on disk and the new one in hand, which is
-the same baseline a commit before the sync would give. dev records the difference as it
-writes, so nobody needs to commit to see what changed. dev never commits.
+dev keeps every synced item as the last finished sync left it, in `.dev/state/items.json`:
+its file, `updated`, front matter, a hash of each body section and its comment count. At the
+end of each sync, once links point at the local copies, dev compares the files with that
+baseline, records the differences and moves the baseline on. That's the same baseline a
+commit before the sync would give, so nobody needs to commit to see what changed. dev never
+commits.
+
+Comparing at the end, rather than as each file is written, covers every way a plugin writes:
+staged page trees, renames, link rewrites. A sync that's interrupted loses nothing, since the
+next one compares with the same baseline. The first sync after upgrading only sets it.
 
 A change is recorded when:
 
-- an item is added, leaves the scope, or moves (a move is one change, not a removal and an
-  addition)
+- an item is added, leaves the scope, is deleted in the service, leaves the workspace, or
+  moves (a move is one change, not a removal and an addition)
 - a front matter field changes: status, assignee, priority, title, parent, or a service's own
   fields
 - a section of the body changes, named by its heading
-- comments are added
+- comments are added: every task source writes a `Comments (N)` heading, so a bigger N is
+  new comments, without each plugin's help
 
 A file that changed while its `updated` didn't is dev rendering it differently, not a change
 in the source, and isn't recorded. Without that, upgrading dev would look like every
-requirement changed.
+requirement changed. Moves, scope changes, deletions and new comments are recorded either
+way, since they don't always move `updated`.
 
 Limits, the same as with git: between two syncs, only the net change is seen.
 
 ### The change report
 
-Each sync adds a section to `work-sessions/<date>/changes.md`, written as the sync goes so
-an interrupted sync still records what it changed. Each entry names the item, what changed,
-and the tasks it affects. The day summary links to it.
+Each sync that changed something adds a section to `work-sessions/<date>/changes.md`. Each
+entry names the item, what changed, and the tasks it affects, with the id of each task's
+entry. The day summary links to it.
 
 ### Which tasks a change affects
 
-A task's sources are worked out on every sync from what dev already knows: the ticket, its
-parent, its links, and the pages and designs those link to. The brief's `sources:` adds what
+A task's sources are worked out on every sync from what dev already knows: the files the
+brief's Sources section links to (the ticket and what it links to, from `dev task start`),
+the item with the task's id, and one step further from those: their parent, their `links`
+and what their bodies link to locally. The brief's `sources:` adds what
 the link graph can't see. Agents add to it when they find a source that matters; usually it's
 empty.
 
@@ -258,7 +269,7 @@ conventions:
 
 Each step is useful on its own.
 
-1. **Change records.** Record changes during sync, the `updated` rule, the change report,
+1. **Change records** (built in 0.4). Record changes during sync, the `updated` rule, the change report,
    each task's sources from the link graph, and `changes.md` in each affected task. Done
    when a sync after a ticket edit says what changed and which tasks it affects, with no
    commit.
@@ -278,7 +289,5 @@ Each step is useful on its own.
 - **How long change reports are kept.** They're small, but every sync adds to one.
 - **`task-build`: a skill or rules.** Building guidance may fit better as rules in
   `AGENTS.md` than as a skill an agent has to pick up.
-- **Comments.** Whether every service's sync records comments the same way, so "comments
-  added" can be found without each plugin's help.
 - **How a skill reports its result** when the tool has no way to stop and wait: a closing
   message, or an entry in `progress.md`.

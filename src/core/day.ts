@@ -214,6 +214,7 @@ export async function writeSummary(
   facts.push("### Commits", "");
   facts.push(...(commits.length > 0 ? commits.flatMap((c) => [`- ${c.id}:`, ...c.commits.map((line) => `  - ${line}`)]) : ["_None._"]), "");
   if (touched.length > 0) facts.push("### Task notes changed", "", ...touched.map((id) => `- [${id}](../../tasks/${id}/)`), "");
+  if (existsSync(path.join(dayDir(root, date), "changes.md"))) facts.push("### Source changes", "", "What the day's syncs changed, and the tasks it affects: [changes.md](changes.md)", "");
 
   for (const entry of enabledServices(config, registry)) {
     const contribute = entry.service.contribute?.dayEnd;
