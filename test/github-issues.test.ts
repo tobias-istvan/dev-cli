@@ -31,7 +31,7 @@ const issue = (number: number, title: string, assignee: string | null, extra: Re
   user: { login: "sam" },
   assignees: assignee ? [{ login: assignee }] : [],
   labels: number === 5 ? [{ name: "bug" }] : [],
-  milestone: number === 5 ? { title: "Sprint", due_on: "2026-11-20T00:00:00Z" } : null,
+  milestone: number === 5 ? { title: "Sprint", due_on: "2026-01-01T00:00:00Z" } : null,
   comments: number === 5 ? 1 : 0,
   ...extra,
 });
@@ -115,7 +115,7 @@ test("issues sync keeps your open issues, one folder each, and leaves pull reque
 
   const text = readFileSync(path.join(root, "github-issues", "acme-web-5", "issue.md"), "utf8");
   assert.match(text, /^---\nid: acme\/web#5\ntitle: Login button\nservice: github:github-issues\n/);
-  assert.match(text, /mine: true\ndue: 2026-11-20\ninScope: true\nvia: scope/);
+  assert.match(text, /mine: true\ndue: 2026-01-01\ninScope: true\nvia: scope/);
   assert.match(text, /### kim · 2026-11-08 11:00\n\nSeen it too\./);
   assert.ok(!existsSync(path.join(root, "github-issues", "acme-web-8")), "pull requests aren't issues");
   assert.ok(!existsSync(path.join(root, "github-issues", "acme-web-6")), "someone else's issue is out of scope");
@@ -143,7 +143,7 @@ test("task list and the snapshot cover issues like any task source", async () =>
   const root = await workspace("{ assigned: any }");
   await dev(root, ["sync"]);
   const list = await dev(root, ["task", "list", "--mine"]);
-  assert.match(list.out, /GitHub Issues, as of .*: 1 task\n {2}acme\/web#5 {2}\[open\] {2}Login button {2}· due 2026-11-20 · mine/);
+  assert.match(list.out, /GitHub Issues, as of .*: 1 task\n {2}acme\/web#5 {2}\[open\] {2}Login button {2}· due 2026-01-01, overdue · mine/);
   assert.match((await dev(root, ["task", "list"])).out, /2 tasks/);
 
   await dev(root, ["day", "start", "--no-sync"]);
