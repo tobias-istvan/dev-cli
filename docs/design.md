@@ -254,7 +254,7 @@ capability; a service implements the ones that apply.
 | Test mode | Recorded responses, so tests never reach the service |
 
 The versioning service adds: list repositories, clone, default branch, branch naming,
-and PRs to review.
+PRs to review, and the PRs or MRs for a branch, with their state.
 
 ### How plugins reach the core
 

@@ -282,7 +282,7 @@ A file you've edited by hand is left as it is and listed, so this is always safe
     .argument("<ref>", "A ticket key, issue number, URL, or a short name for the task")
     .option("--title <text>", "The task's title, when the reference doesn't give one")
     .option("--type <word>", "The branch type, like feature or fix (default: from the item, or feature)")
-    .option("--base <branch>", "Branch to start from (default: the repository's default branch)")
+    .option("--base <branch>", "Branch to start from and merge into (default: conventions.base, else the repository's default branch)")
     .addHelpText(
       "after",
       details(`
@@ -290,7 +290,7 @@ When an enabled service recognises the reference, its item and what it links to 
 fetched, and the brief links to them. Otherwise the reference is the task's name.
 
 Creates worktrees/<id> on a new branch from the latest base, and tasks/<id>/brief.md and
-progress.md. Safe to re-run: an existing worktree or note is left as it is. It never
+progress.md. The brief records the base, which status and cleanup compare with. Safe to re-run: an existing worktree or note is left as it is. It never
 pushes.`),
     )
     .action(async (ref: string, options: { title?: string; type?: string; base?: string }) => {
@@ -336,12 +336,13 @@ are context, not your work, unless they're also marked mine.`),
     .addHelpText(
       "after",
       details(`
-Safe means nothing is lost: no uncommitted changes, and every commit already in the base
-branch. Task notes in tasks/ are never removed.`),
+Safe means nothing is lost: no uncommitted changes, and every commit already in the task's
+base branch, or a pull or merge request merged at the worktree's last commit, which covers
+squash and rebase merges. Task notes in tasks/ are never removed.`),
     )
     .action(async (options: { remove?: boolean }) => {
       const { runTaskCleanup } = await import("./commands/task.ts");
-      await runTaskCleanup(out, options);
+      await runTaskCleanup(registry, out, options);
     });
 
   program

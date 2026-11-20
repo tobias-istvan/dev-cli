@@ -4,6 +4,7 @@ import { safePath } from "./files.ts";
 import path from "node:path";
 import { git, gitMaybe } from "./git.ts";
 import { DevError } from "./output.ts";
+import type { ChangeRequest } from "../plugins/types.ts";
 
 /**
  * Worktrees: one checkout per task under worktrees/<id>, cut from the clone in
@@ -195,6 +196,10 @@ export interface WorktreeState {
   id: string;
   dir: string;
   branch: string;
+  /** The commit checked out. */
+  head: string;
+  /** The branch it's compared with. */
+  base: string;
   /** Commits on the branch not yet in the base. */
   unmerged: string[];
   /** Files changed on the branch compared with the base. */
@@ -222,21 +227,22 @@ export async function inspectWorktree(root: string, id: string, base: string): P
   const dir = worktreeDir(root, id);
   const ref = await baseRef(existsSync(path.join(repositoryDir(root), ".git")) ? repositoryDir(root) : dir, base);
   const lines = (value: string | null) => (value ?? "").split("\n").filter(Boolean);
-  const [branch, unmerged, changed, dirty, behind, unpushed] = await Promise.all([
+  const [branch, head, unmerged, changed, dirty, behind, unpushed] = await Promise.all([
     git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    git(dir, ["rev-parse", "HEAD"]),
     git(dir, ["log", "--oneline", `${ref}..HEAD`]),
     git(dir, ["diff", "--name-only", `${ref}...HEAD`]),
     git(dir, ["status", "--short"]),
     git(dir, ["rev-list", "--count", `HEAD..${ref}`]),
     remoteUnpushed(dir),
   ]);
-  return { id, dir, branch: branch ?? "?", unmerged: lines(unmerged), changed: lines(changed), dirty: lines(dirty), behind: Number(behind) || 0, unpushed: unpushed === null ? null : lines(unpushed) };
+  return { id, dir, branch: branch ?? "?", head, base, unmerged: lines(unmerged), changed: lines(changed), dirty: lines(dirty), behind: Number(behind) || 0, unpushed: unpushed === null ? null : lines(unpushed) };
 }
 
-/** Every worktree's state. One that git can't read is listed as broken, never taken as safe to remove. */
-export async function inspectWorktrees(root: string, base: string): Promise<{ states: WorktreeState[]; broken: Array<{ id: string; reason: string }> }> {
+/** Every worktree's state, each against its own base. One that git can't read is listed as broken, never taken as safe to remove. */
+export async function inspectWorktrees(root: string, baseFor: (id: string) => Promise<string>): Promise<{ states: WorktreeState[]; broken: Array<{ id: string; reason: string }> }> {
   const ids = await worktreeIds(root);
-  const results = await Promise.allSettled(ids.map((id) => inspectWorktree(root, id, base)));
+  const results = await Promise.allSettled(ids.map(async (id) => inspectWorktree(root, id, await baseFor(id))));
   const states: WorktreeState[] = [];
   const broken: Array<{ id: string; reason: string }> = [];
   results.forEach((result, i) => {
@@ -257,20 +263,30 @@ export async function fetchRemote(repo: string): Promise<"fetched" | "unreachabl
  * Safe means nothing is lost: no uncommitted changes, and every commit already in the base,
  * or on the branch's own upstream, as with a PR checked out for review. Without a fresh fetch
  * the upstream can't be trusted (it may have been deleted on origin), so only the base counts.
+ *
+ * A PR or MR merged at exactly this commit counts too, wherever it merged: a squash or rebase
+ * merge never puts the branch's own commits in the base, and the host usually deletes the
+ * branch.
  */
-export function isSafeToRemove(state: WorktreeState, options: { trustUpstream?: boolean } = {}): boolean {
+export function isSafeToRemove(state: WorktreeState, options: { trustUpstream?: boolean; merged?: ChangeRequest | null } = {}): boolean {
   if (state.dirty.length > 0) return false;
+  if (options.merged && isMergedAt(options.merged, state)) return true;
   return state.unmerged.length === 0 || (options.trustUpstream !== false && state.unpushed !== null && state.unpushed.length === 0);
 }
 
+/** Whether a PR or MR merged this worktree's branch as it is now. */
+export function isMergedAt(change: ChangeRequest, state: WorktreeState): boolean {
+  return change.state === "merged" && change.headSha === state.head;
+}
+
 /** Removes a worktree and its branch, after checking again that nothing would be lost. Returns a note when the branch is kept. */
-export async function removeWorktree(root: string, state: WorktreeState, options: { fetched: boolean }): Promise<string | null> {
+export async function removeWorktree(root: string, state: WorktreeState, options: { fetched: boolean; merged?: ChangeRequest | null }): Promise<string | null> {
   const repo = requireClone(root);
-  const fresh = await inspectWorktree(root, state.id, await defaultBranch(repo));
-  if (!isSafeToRemove(fresh, { trustUpstream: options.fetched }) || fresh.branch !== state.branch) throw new DevError("Worktree changed or is no longer safe to remove.");
+  const fresh = await inspectWorktree(root, state.id, state.base);
+  if (!isSafeToRemove(fresh, { trustUpstream: options.fetched, merged: options.merged }) || fresh.branch !== state.branch) throw new DevError("Worktree changed or is no longer safe to remove.");
   await git(repo, ["worktree", "remove", state.dir]);
   if (!state.branch || state.branch === "HEAD") return null;
-  // The check above already proved every commit is in the base or on the upstream. git branch -d
+  // The check above already proved every commit is in the base, on the upstream or merged by a PR. git branch -d
   // would compare with whatever the clone has checked out instead, and refuse merged branches.
   try {
     await git(repo, ["branch", "-D", state.branch]);

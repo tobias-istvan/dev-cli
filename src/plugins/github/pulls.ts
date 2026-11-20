@@ -3,7 +3,7 @@ import { atomicWrite } from "../../core/files.ts";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { Service, ServiceContext, SyncReport } from "../types.ts";
+import type { ChangeRequest, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
@@ -287,4 +287,31 @@ export async function waitingForReview(context: ServiceContext): Promise<Array<{
     }
   }
   return items.sort((a, b) => a.number - b.number);
+}
+
+interface Listed {
+  number: number;
+  html_url: string;
+  state: "open" | "closed";
+  draft?: boolean;
+  merged_at: string | null;
+  base: { ref: string };
+  head: { ref: string; sha: string; repo?: { full_name: string } | null };
+}
+
+/** The PRs from `branch` in the repository itself, newest first. GitHub filters by owner:branch. */
+export async function changeRequests(api: GitHubApi, repo: string, branch: string): Promise<ChangeRequest[]> {
+  const owner = repo.split("/")[0]!;
+  const { items } = await api.listUpTo<Listed>(`/repos/${repo}/pulls?state=all&sort=created&direction=desc&head=${encodeURIComponent(`${owner}:${branch}`)}`, 100);
+  return items
+    .filter((pr) => pr.head.ref === branch && pr.head.repo?.full_name?.toLowerCase() === repo.toLowerCase())
+    .map((pr) => ({
+      number: pr.number,
+      url: pr.html_url,
+      state: pr.merged_at ? "merged" : pr.state === "open" ? "open" : "closed",
+      draft: pr.draft ?? false,
+      base: pr.base.ref,
+      headSha: pr.head.sha,
+      mergedAt: pr.merged_at,
+    }));
 }

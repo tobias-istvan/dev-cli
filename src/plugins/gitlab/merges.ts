@@ -3,7 +3,7 @@ import { atomicWrite } from "../../core/files.ts";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { Service, ServiceContext, SyncReport } from "../types.ts";
+import type { ChangeRequest, Service, ServiceContext, SyncReport } from "../types.ts";
 import { splitFrontMatter, updateFields, writeItem } from "../../core/front-matter.ts";
 import { buildIndex } from "../../core/indexes.ts";
 import { loadConfig } from "../../core/project-config.ts";
@@ -219,4 +219,33 @@ export async function waitingForReview(context: ServiceContext): Promise<Array<{
     waiting.push({ number: Number(entry.name), title: String(data.title ?? ""), author: String(data.author ?? "") });
   }
   return waiting.sort((a, b) => a.number - b.number);
+}
+
+interface ListedMerge {
+  iid: number;
+  web_url: string;
+  state: "opened" | "merged" | "closed" | "locked";
+  draft?: boolean;
+  target_branch: string;
+  source_branch: string;
+  source_project_id: number;
+  target_project_id: number;
+  sha: string;
+  merged_at: string | null;
+}
+
+/** The MRs from `branch` in the project itself, newest first, not from forks. */
+export async function changeRequests(api: GitLabApi, repo: string, branch: string): Promise<ChangeRequest[]> {
+  const { items } = await api.listUpTo<ListedMerge>(`/projects/${projectId(repo)}/merge_requests?state=all&order_by=created_at&sort=desc&source_branch=${encodeURIComponent(branch)}`, 100);
+  return items
+    .filter((mr) => mr.source_branch === branch && mr.source_project_id === mr.target_project_id)
+    .map((mr) => ({
+      number: mr.iid,
+      url: mr.web_url,
+      state: mr.state === "merged" ? "merged" : mr.state === "closed" ? "closed" : "open",
+      draft: mr.draft ?? false,
+      base: mr.target_branch,
+      headSha: mr.sha,
+      mergedAt: mr.merged_at,
+    }));
 }

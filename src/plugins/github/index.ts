@@ -7,7 +7,7 @@ import { GitHubApi, ghAccounts, tokenFor, webBase } from "./api.ts";
 import { issues } from "./issues.ts";
 import { projects } from "./projects.ts";
 import { ghPolicy } from "./policy.ts";
-import { DESCRIPTION, FOLDER, INDEX as PULLS_INDEX, indexPulls, poll, pullRequest, waitingForReview } from "./pulls.ts";
+import { changeRequests, DESCRIPTION, FOLDER, INDEX as PULLS_INDEX, indexPulls, poll, pullRequest, waitingForReview } from "./pulls.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { reviewWorktree } from "../../core/worktree.ts";
 
@@ -135,6 +135,7 @@ const github: Plugin = {
           const token = source.startsWith("https:") && new URL(source).origin === new URL(webBase()).origin ? tokenFor(credentials) : undefined;
           return gitClone(source, target, token);
         },
+        changeRequests: (_context, credentials, repository, branch) => changeRequests(GitHubApi.from(credentials), repository, branch),
       },
       index: PULLS_INDEX,
 

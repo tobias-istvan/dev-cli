@@ -2,9 +2,12 @@ import { createHash } from "node:crypto";
 import { safePath } from "./files.ts";
 import { createOnly } from "./files.ts";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { splitFrontMatter } from "./front-matter.ts";
 import { DevError } from "./output.ts";
+import { isBranchName, type ProjectConfig } from "./project-config.ts";
+import { defaultBranch } from "./worktree.ts";
 
 /**
  * Task notes in tasks/<id>/: the brief, the progress note, and later decisions and the
@@ -38,6 +41,8 @@ export interface BriefContext {
   id: string;
   title: string;
   branch: string;
+  /** The branch the task started from, and merges back into. */
+  base: string;
   /** Files in the workspace about this task, relative to the workspace root. */
   sources: string[];
   /** Whether the code repository has a PR template. */
@@ -64,6 +69,7 @@ function brief(context: BriefContext): string {
 id: ${JSON.stringify(context.id)}
 title: ${JSON.stringify(context.title)}
 branch: ${JSON.stringify(context.branch)}
+base: ${JSON.stringify(context.base)}
 worktree: ${JSON.stringify(`worktrees/${context.id}`)}
 ---
 
@@ -127,4 +133,27 @@ export async function writeTaskNotes(root: string, context: BriefContext): Promi
     written.push(path.join("tasks", context.id, name));
   }
   return written;
+}
+
+/**
+ * The base recorded in a task's brief, or null for a brief from before dev recorded it, a
+ * review worktree with no brief, or a brief someone rewrote without it.
+ */
+export async function taskBase(root: string, id: string): Promise<string | null> {
+  try {
+    const base = splitFrontMatter(await readFile(path.join(taskDir(root, id), "brief.md"), "utf8")).data?.base;
+    return isBranchName(base) ? base : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The base new tasks start from: dev.yaml's conventions.base, else the repository's default branch. */
+export async function workspaceBase(repo: string, config: ProjectConfig): Promise<string> {
+  return config.conventions.base ?? (await defaultBranch(repo));
+}
+
+/** Each task's own base, from its brief; the workspace's for a brief from before dev recorded it, or no brief. */
+export function basesFor(root: string, fallback: string): (id: string) => Promise<string> {
+  return async (id) => (await taskBase(root, id)) ?? fallback;
 }

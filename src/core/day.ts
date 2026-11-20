@@ -6,8 +6,9 @@ import type { Output } from "../plugins/types.ts";
 import type { Registry } from "../plugins/registry.ts";
 import { workspaceServiceContext } from "./context.ts";
 import { git, gitMaybe } from "./git.ts";
-import type { ProjectConfig } from "./project-config.ts";
+import { loadConfig, type ProjectConfig } from "./project-config.ts";
 import { enabledServices } from "./scaffold.ts";
+import { basesFor, workspaceBase } from "./tasks.ts";
 import { baseRef, defaultBranch, inspectWorktrees, remoteName, isSafeToRemove, repositoryDir, worktreeDir, worktreeIds } from "./worktree.ts";
 
 /**
@@ -118,8 +119,7 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
   }
 
   if (existsSync(path.join(repositoryDir(root), ".git"))) {
-    const base = await defaultBranch(repositoryDir(root));
-    const { states, broken } = await inspectWorktrees(root, base);
+    const { states, broken } = await inspectWorktrees(root, basesFor(root, await workspaceBase(repositoryDir(root), config)));
     const active = states.filter((s) => !isSafeToRemove(s));
     const idle = states.filter((s) => isSafeToRemove(s));
 
@@ -127,7 +127,7 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
     if (active.length === 0) lines.push('_None. Start one with "dev task start <ref>"._');
     for (const state of active) {
       const parts = [`${state.unmerged.length} commit${state.unmerged.length === 1 ? "" : "s"}`, `${state.dirty.length} uncommitted`];
-      if (state.behind > 0) parts.push(`${base} has moved on by ${state.behind}`);
+      if (state.behind > 0) parts.push(`${state.base} has moved on by ${state.behind}`);
       lines.push(`- [${state.id}](tasks/${state.id}/brief.md) on \`${state.branch}\` · ${parts.join(", ")}`);
     }
     for (const { id, reason } of broken) lines.push(`- ${id}: git can't read this worktree (${reason})`);
@@ -164,9 +164,10 @@ export interface SessionLine {
 /** Commits made today in each worktree. */
 async function commitsOn(root: string, date: string): Promise<Array<{ id: string; commits: string[] }>> {
   const results: Array<{ id: string; commits: string[] }> = [];
-  const base = await baseRef(repositoryDir(root), await defaultBranch(repositoryDir(root)));
+  const baseFor = basesFor(root, await workspaceBase(repositoryDir(root), loadConfig(root)));
   const seen = new Set<string>();
   for (const id of await worktreeIds(root)) {
+    const base = await baseRef(repositoryDir(root), await baseFor(id));
     const log = await gitMaybe(worktreeDir(root, id), ["log", "--oneline", "--no-merges", `${base}..HEAD`, `--since=${date} 00:00`, `--until=${date} 23:59:59`]);
     const commits = (log ?? "").split("\n").filter((line) => { const sha = line.split(" ")[0]; if (!line || seen.has(sha!)) return false; seen.add(sha!); return true; });
     if (commits.length > 0) results.push({ id, commits });
