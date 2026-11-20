@@ -120,6 +120,7 @@ definition and dev parses them with it, so the two can't drift.
 id: "ABC-123"
 title: "Sort the order list"
 branch: "feature/ABC-123-sort-the-order-list"
+base: "main"                   # recorded since 0.4; status and cleanup compare with it
 worktree: "worktrees/ABC-123"
 round: 1
 pr: 42
@@ -240,7 +241,7 @@ commands it runs. They're generated into `.github/skills/`, `.claude/skills/` an
 | `snapshot.md` | Tasks with changed sources, reopened tasks |
 | `dev day end` | Links the day's change report |
 | `dev doctor` | Reports malformed record entries |
-| Versioning services | A new capability: find the pull or merge request for a task's branch, and its state |
+| Versioning services | Built in 0.4 for `dev task cleanup` (issue #7): `changeRequests`, the pull or merge requests for a branch, newest first, with their state |
 
 **How to check the code.** Verification needs the repository's test, lint and build
 commands. Skills find them in the repository's own `AGENTS.md`, scripts and CI config. An

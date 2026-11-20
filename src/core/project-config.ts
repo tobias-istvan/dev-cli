@@ -32,6 +32,8 @@ export interface ProjectConfig {
   conventions: {
     /** Branch names for tasks, like "{type}/{id}-{slug}". */
     branch?: string;
+    /** The branch tasks start from and merge into, like develop. Absent means the repository's default branch. */
+    base?: string;
     /** Files only in the clone, like apps/web/.env.local, copied into each new worktree if git ignores them. */
     worktreeFiles?: string[];
   };
@@ -39,6 +41,11 @@ export interface ProjectConfig {
 
 const SERVICE_KEY = /^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$/;
 const TOP_LEVEL = new Set(["version", "versioning", "services", "conventions", "plugins"]);
+
+/** A plausible branch name: what git accepts, short of asking git. */
+export function isBranchName(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(value) && !/\.\.|\/\/|\/$|\.lock$|\/\.|\.$/.test(value);
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -133,6 +140,14 @@ export function parseConfig(text: string): { config: ProjectConfig; problems: Pr
         problems.push({ message: '"conventions.branch" should be text containing {id}, like "{type}/{id}-{slug}".' });
       } else {
         config.conventions.branch = data.conventions.branch;
+      }
+    }
+    const base = isObject(data.conventions) ? data.conventions.base : undefined;
+    if (base !== undefined) {
+      if (!isBranchName(base)) {
+        problems.push({ message: '"conventions.base" should be a branch name, like develop or release/1.2.' });
+      } else {
+        config.conventions.base = base;
       }
     }
     const files = isObject(data.conventions) ? data.conventions.worktreeFiles : undefined;

@@ -1,0 +1,54 @@
+{
+  "_comment": "GET /repos/acme/web/pulls?state=all&head=acme:<branch>, trimmed to the fields dev reads. Newest first. headSha is filled in by the test with the worktree's commit where it says HEAD.",
+  "feature/squashed-squashed": [
+    {
+      "number": 8,
+      "html_url": "https://github.com/acme/web/pull/8",
+      "state": "closed",
+      "draft": false,
+      "merged_at": "2026-11-18T09:12:44Z",
+      "base": { "ref": "main" },
+      "head": { "ref": "feature/squashed-squashed", "sha": "HEAD", "repo": { "full_name": "acme/web" } }
+    },
+    {
+      "number": 7,
+      "html_url": "https://github.com/acme/web/pull/7",
+      "state": "closed",
+      "draft": false,
+      "merged_at": null,
+      "base": { "ref": "main" },
+      "head": { "ref": "feature/squashed-squashed", "sha": "0b4c1a5e2f8d9c3b7a6e5d4c3b2a1f0e9d8c7b6a", "repo": { "full_name": "acme/web" } }
+    }
+  ],
+  "feature/moved-moved": [
+    {
+      "number": 9,
+      "html_url": "https://github.com/acme/web/pull/9",
+      "state": "closed",
+      "draft": false,
+      "merged_at": "2026-11-18T10:02:10Z",
+      "base": { "ref": "main" },
+      "head": { "ref": "feature/moved-moved", "sha": "7d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e", "repo": { "full_name": "acme/web" } }
+    }
+  ],
+  "feature/open-open": [
+    {
+      "number": 10,
+      "html_url": "https://github.com/acme/web/pull/10",
+      "state": "open",
+      "draft": true,
+      "merged_at": null,
+      "base": { "ref": "release/1" },
+      "head": { "ref": "feature/open-open", "sha": "HEAD", "repo": { "full_name": "acme/web" } }
+    },
+    {
+      "number": 11,
+      "html_url": "https://github.com/fan/web/pull/11",
+      "state": "closed",
+      "draft": false,
+      "merged_at": "2026-11-17T08:00:00Z",
+      "base": { "ref": "main" },
+      "head": { "ref": "feature/open-open", "sha": "HEAD", "repo": { "full_name": "fan/web" } }
+    }
+  ]
+}

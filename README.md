@@ -289,6 +289,7 @@ services:
 
 conventions:
   branch: "{type}/{id}-{slug}"    # task branch names
+  base: develop                   # where tasks start and merge (default: the repository's default branch)
   worktreeFiles:                  # copied from the clone into each new worktree, if git ignores them
     - apps/web/.env.local
 ```
@@ -302,6 +303,7 @@ conventions:
 | `services[].sync` | `full` or `referenced`. See [Syncing](#syncing) |
 | `services[].fetch` | `within-scope` or `anywhere`. See [The scope boundary](#the-scope-boundary) |
 | `conventions.branch` | Branch names for tasks. `{type}` is `feature`, `fix` or `chore`, from the item |
+| `conventions.base` | The branch tasks start from and merge into, for teams that merge into `develop` or a release branch. `dev task start --base` overrides it for one task |
 | `conventions.worktreeFiles` | Local-only files, like `.env.local`, copied into each new worktree. Only files git ignores are copied, so they can't be committed by accident |
 
 Edit it by hand or with `dev add`, `dev remove` and `dev <service> scope`. Comments are kept.
@@ -583,13 +585,14 @@ dev task start "Try the new layout"      # a task with no ticket
 
 1. If an enabled service recognises the reference, its item is fetched, with what it links to:
    a ticket's parent, and the Confluence pages and Figma designs either one mentions.
-2. A worktree is created at `worktrees/<id>`, on a new branch from the latest default branch,
-   named by `conventions.branch`. The type is `fix` for bugs and `chore` for tasks, else
-   `feature`. The branch has no upstream until it's pushed.
+2. A worktree is created at `worktrees/<id>`, on a new branch from the latest base: `--base`,
+   else `conventions.base`, else the default branch. The branch is named by
+   `conventions.branch`. The type is `fix` for bugs and `chore` for tasks, else `feature`. The
+   branch has no upstream until it's pushed.
 3. Files listed in `conventions.worktreeFiles`, like `.env.local`, are copied from the clone if
    git ignores them.
-4. `tasks/<id>/brief.md` and `progress.md` are written, if they aren't there. The brief links
-   every source, and lists links outside the scope.
+4. `tasks/<id>/brief.md` and `progress.md` are written, if they aren't there. The brief records
+   the base, links every source, and lists links outside the scope.
 
 Running it again leaves the worktree, brief and progress note as they are. It never pushes.
 
@@ -602,9 +605,16 @@ dev task cleanup              # which worktrees can go, and why the rest can't
 dev task cleanup --remove     # remove the safe ones
 ```
 
-A worktree is **safe to remove** when nothing would be lost: no uncommitted changes, and every
-commit already in the default branch or on a freshly fetched remote upstream. `tasks/<id>/` is never
-removed.
+A worktree is **safe to remove** when nothing would be lost: no uncommitted changes, and one of:
+
+- every commit is already in the task's base, the one its brief records (a brief from before
+  0.4 has none, so `conventions.base` or the default branch is used)
+- every commit is on a freshly fetched remote upstream
+- GitHub or GitLab has a merged pull or merge request for the branch at exactly the worktree's
+  last commit. That covers squash and rebase merges, and branches the host deleted on merge.
+  Without a login or a connection, only the first two count.
+
+`tasks/<id>/` is never removed.
 
 ## Reviewing pull and merge requests
 

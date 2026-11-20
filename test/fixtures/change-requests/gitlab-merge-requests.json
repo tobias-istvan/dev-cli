@@ -1,0 +1,72 @@
+{
+  "_comment": "GET /projects/team%2Fweb/merge_requests?state=all&source_branch=<branch>, trimmed to the fields dev reads. Newest first.",
+  "feature/squashed-squashed": [
+    {
+      "id": 90211,
+      "iid": 14,
+      "web_url": "https://gitlab.com/team/web/-/merge_requests/14",
+      "state": "merged",
+      "draft": false,
+      "source_branch": "feature/squashed-squashed",
+      "target_branch": "develop",
+      "source_project_id": 4211,
+      "target_project_id": 4211,
+      "sha": "3f2a9c1d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+      "merged_at": "2026-11-18T09:12:44.120Z"
+    },
+    {
+      "id": 90198,
+      "iid": 12,
+      "web_url": "https://gitlab.com/team/web/-/merge_requests/12",
+      "state": "closed",
+      "draft": false,
+      "source_branch": "feature/squashed-squashed",
+      "target_branch": "develop",
+      "source_project_id": 4211,
+      "target_project_id": 4211,
+      "sha": "0b4c1a5e2f8d9c3b7a6e5d4c3b2a1f0e9d8c7b6a",
+      "merged_at": null
+    },
+    {
+      "id": 90190,
+      "iid": 11,
+      "web_url": "https://gitlab.com/team/web/-/merge_requests/11",
+      "state": "merged",
+      "draft": false,
+      "source_branch": "feature/squashed-squashed",
+      "target_branch": "develop",
+      "source_project_id": 5530,
+      "target_project_id": 4211,
+      "sha": "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e",
+      "merged_at": "2026-11-10T09:00:00.000Z"
+    }
+  ],
+  "feature/open-open": [
+    {
+      "id": 90300,
+      "iid": 15,
+      "web_url": "https://gitlab.com/team/web/-/merge_requests/15",
+      "state": "opened",
+      "draft": true,
+      "source_branch": "feature/open-open",
+      "target_branch": "main",
+      "source_project_id": 4211,
+      "target_project_id": 4211,
+      "sha": "aa11bb22cc33dd44ee55ff6677889900aabbccdd",
+      "merged_at": null
+    },
+    {
+      "id": 90280,
+      "iid": 13,
+      "web_url": "https://gitlab.com/team/web/-/merge_requests/13",
+      "state": "locked",
+      "draft": false,
+      "source_branch": "feature/open-open",
+      "target_branch": "main",
+      "source_project_id": 4211,
+      "target_project_id": 4211,
+      "sha": "aa11bb22cc33dd44ee55ff6677889900aabbccdd",
+      "merged_at": null
+    }
+  ]
+}

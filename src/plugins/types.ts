@@ -297,6 +297,26 @@ export interface VersioningCapability {
    * people who clone over SSH. Credentials must not end up in the clone's config.
    */
   clone(context: PluginContext, credentials: Credentials, repository: string, target: string, url?: string): Promise<boolean>;
+  /**
+   * The pull or merge requests whose head is `branch` in `repository` itself (not a fork),
+   * newest first, open, merged and closed alike. How cleanup tells a squash-merged branch
+   * from unmerged work, and later how a task finds its PR.
+   */
+  changeRequests?(context: PluginContext, credentials: Credentials, repository: string, branch: string): Promise<ChangeRequest[]>;
+}
+
+/** A pull request or merge request, as much as the core needs of it. */
+export interface ChangeRequest {
+  /** The PR number, or the MR's iid. */
+  number: number;
+  url: string;
+  state: "open" | "merged" | "closed";
+  draft: boolean;
+  /** The branch it merges into. */
+  base: string;
+  /** The last commit on its head branch: for a merged one, what was merged. */
+  headSha: string;
+  mergedAt: string | null;
 }
 
 export interface Service {

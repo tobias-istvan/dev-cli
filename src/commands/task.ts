@@ -2,28 +2,29 @@ import { withRefresh } from "../core/refresh.ts";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { Registry } from "../plugins/registry.ts";
-import type { Output, Reference, ServiceEntry, TaskContext, TaskItem } from "../plugins/types.ts";
+import type { ChangeRequest, Output, Reference, ServiceEntry, TaskContext, TaskItem } from "../plugins/types.ts";
 import { workspaceServiceContext } from "../core/context.ts";
 import { DevError } from "../core/output.ts";
 import { count, step } from "../core/progress.ts";
 import { loadConfig, type ProjectConfig } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
-import { legacyTaskId, taskDir, taskId, writeTaskNotes } from "../core/tasks.ts";
+import { basesFor, legacyTaskId, taskDir, taskId, workspaceBase, writeTaskNotes } from "../core/tasks.ts";
 import {
   branchName,
   copyLocalFiles,
   DEFAULT_BRANCH_PATTERN,
-  defaultBranch,
   ensureWorktree,
   fetchRemote,
   inspectWorktree,
   inspectWorktrees,
+  isMergedAt,
   isSafeToRemove,
   removeWorktree,
   requireClone,
   slugify,
   worktreeDir,
   worktreeIds,
+  type WorktreeState,
 } from "../core/worktree.ts";
 import { requireWorkspaceRoot } from "../core/workspace.ts";
 
@@ -110,11 +111,11 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   const type = options.type ?? resolved?.context.type ?? "feature";
 
   const pattern = config.conventions.branch ?? DEFAULT_BRANCH_PATTERN;
-  const worktree = await step(out, `Creating worktrees/${id}`, () => ensureWorktree(root, id, branchName(pattern, { type, id, slug: slugify(title) }), options.base));
+  const worktree = await step(out, `Creating worktrees/${id}`, () => ensureWorktree(root, id, branchName(pattern, { type, id, slug: slugify(title) }), options.base ?? config.conventions.base));
   const copies = await copyLocalFiles(repo, worktree.path, config.conventions.worktreeFiles ?? []);
 
   const template = [".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md", "PULL_REQUEST_TEMPLATE.md"].find((f) => existsSync(path.join(repo, f))) ?? null;
-  const notes = await writeTaskNotes(root, { id, title, branch: worktree.branch, sources: resolved?.context.files ?? [], prTemplate: template, notFetched: resolved?.context.notFetched ?? [] });
+  const notes = await writeTaskNotes(root, { id, title, branch: worktree.branch, base: worktree.base, sources: resolved?.context.files ?? [], prTemplate: template, notFetched: resolved?.context.notFetched ?? [] });
 
   out.info(resolved ? `${resolved.entry.service.title}: ${title}` : `Task: ${title}`);
   out.info(`Worktree: worktrees/${id} on ${worktree.branch}${worktree.existed ? ", already there and left as it was" : `, from ${worktree.base}`}`);
@@ -128,13 +129,14 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
 
 export async function runTaskStatus(out: Output, id?: string): Promise<void> {
   const root = requireWorkspaceRoot();
-  const base = await defaultBranch(requireClone(root));
+  const baseFor = basesFor(root, await workspaceBase(requireClone(root), loadConfig(root)));
 
   if (id) {
     if (!existsSync(worktreeDir(root, id))) {
       throw new DevError(`There's no worktree for ${id}.`, `Start it with "dev task start ${id}".`);
     }
-    const state = await inspectWorktree(root, id, base);
+    const state = await inspectWorktree(root, id, await baseFor(id));
+    const base = state.base;
     out.info(`${id} on ${state.branch}`);
     out.info(`Commits not yet in ${base}: ${state.unmerged.length}${state.unmerged.map((c) => `\n  ${c}`).join("")}`);
     out.info(`Files changed: ${state.changed.length}${state.changed.map((f) => `\n  ${f}`).join("")}`);
@@ -149,25 +151,64 @@ export async function runTaskStatus(out: Output, id?: string): Promise<void> {
     out.info('No tasks in flight. Start one with "dev task start <ref>".');
     return;
   }
-  const { states, broken } = await inspectWorktrees(root, base);
+  const { states, broken } = await inspectWorktrees(root, baseFor);
   for (const { id: each, reason } of broken) out.warn(`${each}  can't be read: ${reason}`);
   for (const state of states) {
     const each = state.id;
     const parts = [`${state.unmerged.length} commit${state.unmerged.length === 1 ? "" : "s"}`, `${state.dirty.length} uncommitted`];
-    if (state.behind > 0) parts.push(`${state.behind} behind ${base}`);
+    if (state.behind > 0) parts.push(`${state.behind} behind ${state.base}`);
     out.info(`${each}  ${state.branch}  ${parts.join(", ")}`);
   }
 }
 
-export async function runTaskCleanup(out: Output, options: { remove?: boolean }): Promise<void> {
+/**
+ * For worktrees git alone can't clear, the merged PR or MR the versioning service knows for
+ * their branch. Best effort: without a login, the capability or a connection, only git counts.
+ */
+async function mergedChanges(root: string, config: ProjectConfig, registry: Registry, out: Output, states: WorktreeState[]): Promise<Map<string, ChangeRequest>> {
+  const found = new Map<string, ChangeRequest>();
+  const entry = config.versioning ? registry.service(config.versioning.service) : undefined;
+  const find = entry?.service.versioning?.changeRequests;
+  if (states.length === 0 || !config.versioning || !entry || !find) return found;
+  const repository = config.versioning.repo;
+  const context = workspaceServiceContext(root, entry, config, registry, out);
+  const failures: string[] = [];
+  try {
+    const credentials = context.credentials();
+    await step(out, `Asking ${entry.service.title} which branches were merged`, async (report) => {
+      for (const [i, state] of states.entries()) {
+        report(`${i} of ${states.length}: ${state.branch}`);
+        try {
+          const changes = await find(context, credentials, repository, state.branch);
+          const merged = changes.find((change) => isMergedAt(change, state)) ?? changes.find((change) => change.state === "merged");
+          if (merged) found.set(state.id, merged);
+        } catch (error) {
+          failures.push((error as Error).message);
+        }
+      }
+    });
+  } catch (error) {
+    failures.push((error as Error).message);
+  }
+  if (failures.length > 0) out.warn(`Couldn't ask ${entry.service.title} which branches were merged (${failures[0]}), so squash-merged branches may be kept.`);
+  return found;
+}
+
+export async function runTaskCleanup(registry: Registry, out: Output, options: { remove?: boolean }): Promise<void> {
   const root = requireWorkspaceRoot();
-  const base = await defaultBranch(requireClone(root));
-  const remote = await step(out, "Fetching from the repository's remote", () => fetchRemote(requireClone(root)));
+  const config = loadConfig(root);
+  const repo = requireClone(root);
+  const fallback = await workspaceBase(repo, config);
+  const remote = await step(out, "Fetching from the repository's remote", () => fetchRemote(repo));
   const fetched = remote === "fetched";
   if (remote === "unreachable") out.warn("Couldn't reach the repository's remote, so only worktrees whose commits are all in the base count as safe.");
-  const { states, broken } = await inspectWorktrees(root, base);
-  const safe = states.filter((s) => isSafeToRemove(s, { trustUpstream: fetched }));
-  const kept = states.filter((s) => !isSafeToRemove(s, { trustUpstream: fetched }));
+  const { states, broken } = await inspectWorktrees(root, basesFor(root, fallback));
+  // Only ask the service about clean worktrees git can't already clear, and never a detached one.
+  const unclear = states.filter((s) => s.dirty.length === 0 && s.branch !== "HEAD" && !isSafeToRemove(s, { trustUpstream: fetched }));
+  const merged = await mergedChanges(root, config, registry, out, unclear);
+  const safeOptions = (s: WorktreeState) => ({ trustUpstream: fetched, merged: merged.get(s.id) });
+  const safe = states.filter((s) => isSafeToRemove(s, safeOptions(s)));
+  const kept = states.filter((s) => !isSafeToRemove(s, safeOptions(s)));
   for (const { id, reason } of broken) out.warn(`Keep ${id}: git can't read it (${reason}).`);
 
   if (states.length === 0 && broken.length === 0) {
@@ -175,20 +216,29 @@ export async function runTaskCleanup(out: Output, options: { remove?: boolean })
     return;
   }
   for (const state of kept) {
-    const reasons = [state.unmerged.length > 0 ? `${state.unmerged.length} commit(s) not in ${base}${!fetched && state.unpushed?.length === 0 ? " (pushed, but the remote couldn't be checked)" : ""}` : "", state.dirty.length > 0 ? `${state.dirty.length} uncommitted change(s)` : ""].filter(Boolean);
+    const change = merged.get(state.id);
+    const reasons = [
+      state.unmerged.length > 0 ? `${state.unmerged.length} commit(s) not in ${state.base}${!fetched && state.unpushed?.length === 0 ? " (pushed, but the remote couldn't be checked)" : ""}` : "",
+      change && !isMergedAt(change, state) ? `${change.url} merged an earlier commit` : "",
+      state.dirty.length > 0 ? `${state.dirty.length} uncommitted change(s)` : "",
+    ].filter(Boolean);
     out.info(`Keep ${state.id}: ${reasons.join(", ")}.`);
   }
   if (safe.length === 0) {
     out.info("Nothing is safe to remove.");
     return;
   }
+  const label = (s: WorktreeState) => {
+    const change = merged.get(s.id);
+    return change && isMergedAt(change, s) && s.unmerged.length > 0 ? `${s.id} (merged by ${change.url})` : s.id;
+  };
   if (!options.remove) {
-    out.info(`Safe to remove, nothing would be lost: ${safe.map((s) => s.id).join(", ")}.\nRun "dev task cleanup --remove" to remove them. Their notes in tasks/ stay.`);
+    out.info(`Safe to remove, nothing would be lost: ${safe.map(label).join(", ")}.\nRun "dev task cleanup --remove" to remove them. Their notes in tasks/ stay.`);
     return;
   }
   for (const state of safe) {
     try {
-      const note = await removeWorktree(root, state, { fetched });
+      const note = await removeWorktree(root, state, { fetched, merged: merged.get(state.id) });
       out.info(`Removed worktrees/${state.id}. Its notes in tasks/${state.id}/ stay.`);
       if (note) out.warn(`  ${note}`);
     } catch (error) {

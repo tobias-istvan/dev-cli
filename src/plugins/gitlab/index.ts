@@ -5,7 +5,7 @@ import { ask, secret } from "../../core/prompt.ts";
 import { gitClone } from "../../core/run.ts";
 import { GitLabApi, serverFrom } from "./api.ts";
 import { gitlabIssues } from "./issues.ts";
-import { DESCRIPTION, FOLDER, INDEX as MERGES_INDEX, indexMerges, pollMerges, pullMerge, waitingForReview } from "./merges.ts";
+import { changeRequests, DESCRIPTION, FOLDER, INDEX as MERGES_INDEX, indexMerges, pollMerges, pullMerge, waitingForReview } from "./merges.ts";
 import { glabPolicy } from "./policy.ts";
 import { loadConfig } from "../../core/project-config.ts";
 import { reviewWorktree } from "../../core/worktree.ts";
@@ -93,6 +93,7 @@ const gitlab: Plugin = {
           // Over SSH, git uses the person's own keys. Over HTTPS, this login's token, for this clone only.
           return gitClone(source, target, source.startsWith("https:") && new URL(source).origin === new URL(server.host).origin ? server.token : undefined, "oauth2");
         },
+        changeRequests: (_context, credentials, repository, branch) => changeRequests(GitLabApi.from(credentials), repository, branch),
       },
       index: MERGES_INDEX,
       async sync(context) {
