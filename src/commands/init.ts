@@ -125,7 +125,7 @@ async function cloneRepository(root: string, entry: ServiceEntry, repo: string, 
   return (await versioning.clone(pluginContext(root, out), saved?.credentials ?? {}, repo, target, source)) ? "cloned" : "failed";
 }
 
-/** Init asks its questions, its logins' and its services' with ink: an experiment. */
+/** Init asks its questions, its logins' and its services' with ink. */
 export function runInit(program: Command, registry: Registry, out: Output, folder: string | undefined, options: InitOptions): Promise<void> {
   return withInkPrompts(() => initWorkspace(program, registry, out, folder, options));
 }

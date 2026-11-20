@@ -7,8 +7,8 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 5 complete: Figma, GitLab, Notion and GitHub Projects. Open questions are at the end.
-What comes next, the task workflow, is in [workflow.md](workflow.md).
+Status: every phase below is complete, and dev is published on npm. Open questions are at the
+end. What comes next, the task workflow, is in [workflow.md](workflow.md).
 
 ## Goals
 
@@ -372,10 +372,11 @@ sweep, worked through the `tasks`, `links` and `contribute` capabilities unchang
 | Language | TypeScript, shipped as compiled JavaScript | Type-checked, and runs wherever Node does |
 | Runtime | Node 22 or later | The oldest maintained LTS line, so most machines already have it |
 | Commands | Commander | Mature, with generated help |
-| Prompts | `@inquirer/prompts` | Stable, and supports lists and search for long repo lists |
+| Prompts | ink for `dev init`, `@inquirer/prompts` elsewhere | ink lists filter as you type and show where you are, which init's long repo and scope lists need. `DEV_PROMPTS=classic` gives init the inquirer look |
 | Config format | YAML | People edit it by hand, and it allows comments |
 | Tests | `node:test` with recorded responses | No extra framework |
 | Distribution | Public npm package `@tobias.istvan/dev`, command `dev` | `npm i -g @tobias.istvan/dev`, no repository access needed |
+| Publishing | A GitHub release stages the package on npm through trusted publishing, with provenance; it goes live after a 2FA approval | No npm token anywhere, and nothing is published without the person |
 | Licence | MIT | |
 
 ## Phases
@@ -388,12 +389,11 @@ sweep, worked through the `tasks`, `links` and `contribute` capabilities unchang
    `scope` and `login`.
 4. **GitHub Issues**: a second tracker, to prove the interface without core changes.
 5. **More plugins**: Notion, GitLab, GitHub Projects, Figma.
-6. **Release**: CI, npm publishing, README and getting started, then 0.1.0.
+6. **Release**: CI, npm publishing, README and getting started.
+7. **Task workflow**: see [workflow.md](workflow.md).
 
 ## Open questions
 
-- **npm account.** Publishing `@tobias.istvan/dev` needs an npm user or organisation
-  called `tobias.istvan`. Needed by phase 6.
 - **Task folder names** when two services use the same id format.
 - **Command name clashes.** Another tool may already install `dev`. Worth an alias, like
   `devw`, if it turns out to be common.
