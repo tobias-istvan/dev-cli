@@ -21,7 +21,7 @@ const UPLOAD = "25addea2-357a-42c0-a1c8-fba0163382cc";
 
 const field = (name: string, value: Record<string, unknown>) => ({ ...value, field: { name } });
 const items = [
-  { id: "I1", updatedAt: "2026-11-08T10:00:00Z", fieldValues: { nodes: [field("Status", { name: "In progress" }), field("Due date", { date: "2026-11-20" }), field("Title", { text: "x" })] }, content: {
+  { id: "I1", updatedAt: "2026-11-08T10:00:00Z", fieldValues: { nodes: [field("Status", { name: "In progress" }), field("Due date", { date: "2026-01-01" }), field("Title", { text: "x" })] }, content: {
       __typename: "Issue", number: 5, title: "Login button", url: "https://github.com/acme/web/issues/5", state: "OPEN", repository: { nameWithOwner: "acme/web" }, assignees: { nodes: [{ login: "me" }] },
       // WEB is the fake server. A private image only downloads from the signed address in the HTML.
       body: `See the spec.\n\n![The mockup](WEB/user-attachments/assets/${UPLOAD})`,
@@ -101,12 +101,12 @@ test("board items you're assigned become tasks, with the board's own fields", as
 
   const item = readFileSync(path.join(root, "github-projects", "acme-3", "acme-web-5", "item.md"), "utf8");
   assert.match(item, /^---\nid: acme\/web#5\ntitle: Login button\nservice: github:github-projects\n/);
-  assert.match(item, /status: In progress\nboard: acme\/3\ntype: issue\nfields:\n {2}Status: In progress\n {2}Due date: 2026-11-20\n/);
-  assert.match(item, /mine: true\ndone: false\ndue: 2026-11-20/);
+  assert.match(item, /status: In progress\nboard: acme\/3\ntype: issue\nfields:\n {2}Status: In progress\n {2}Due date: 2026-01-01\n/);
+  assert.match(item, /mine: true\ndone: false\ndue: 2026-01-01/);
   assert.doesNotMatch(item, /Title: x/, "the built-in title field isn't repeated");
 
   const list = await dev(root, ["task", "list", "--mine"]);
-  assert.match(list.out, /GitHub Projects, as of .*: 2 tasks\n {2}acme\/web#5 {2}\[In progress\] {2}Login button {2}· due 2026-11-20 · mine/);
+  assert.match(list.out, /GitHub Projects, as of .*: 2 tasks\n {2}acme\/web#5 {2}\[In progress\] {2}Login button {2}· due 2026-01-01, overdue · mine/);
   assert.match(list.out, /draft-\w+ {2}\[Todo\] {2}Try a new layout/);
   assert.doesNotMatch(list.out, /Old work/, "done items aren't listed as work");
   assert.match((await dev(root, ["task", "list", "--all"])).out, /Old work/);
