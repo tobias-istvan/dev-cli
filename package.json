@@ -4,6 +4,14 @@
   "description": "Set up a workspace around a code repository, and gather the tickets, docs and designs each task needs, for people and AI agents",
   "license": "MIT",
   "author": "Istvan Tobias",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tobias-istvan/dev-cli.git"
+  },
+  "homepage": "https://github.com/tobias-istvan/dev-cli#readme",
+  "bugs": {
+    "url": "https://github.com/tobias-istvan/dev-cli/issues"
+  },
   "type": "module",
   "bin": {
     "dev": "dist/cli.js"
