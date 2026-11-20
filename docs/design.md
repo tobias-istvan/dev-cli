@@ -7,7 +7,8 @@ and hand it over.
 
 This document sets out the decisions that shape everything else.
 
-Status: phase 5 complete: Figma, GitLab, Notion and GitHub Projects. Open questions are at the end.
+Status: every phase below is complete, and dev is published on npm. Open questions are at the
+end. What comes next, the task workflow, is in [workflow.md](workflow.md).
 
 ## Goals
 
@@ -345,8 +346,11 @@ aren't fetched again, and file links Notion signs for an hour are named, not wri
 GitHub Projects is a task source on the GitHub login, through GraphQL, which needs the
 `read:project` scope. Each item on a board in scope, whether an issue, a PR or a draft,
 becomes `github-projects/<owner>-<number>/<item>/item.md`, with the board's own fields,
-like Status or Iteration. An item counts as done when its status says so, or its issue or
-PR is closed. A field whose name mentions due or target date becomes the due date.
+like Status or Iteration, and the last 50 comments of an issue or PR. Attachments linked in
+the text are downloaded into the item's `attachments/` folder, with the mirror Jira and
+Confluence use, and never with the login: images through the signed addresses in GitHub's
+rendered HTML, other files only when they're public. An item counts as done when its status
+says so, or its issue or PR is closed. A field whose name mentions due or target date becomes the due date.
 
 ## What phase 4 taught the interface
 
@@ -368,10 +372,11 @@ sweep, worked through the `tasks`, `links` and `contribute` capabilities unchang
 | Language | TypeScript, shipped as compiled JavaScript | Type-checked, and runs wherever Node does |
 | Runtime | Node 22 or later | The oldest maintained LTS line, so most machines already have it |
 | Commands | Commander | Mature, with generated help |
-| Prompts | `@inquirer/prompts` | Stable, and supports lists and search for long repo lists |
+| Prompts | ink for `dev init`, `@inquirer/prompts` elsewhere | ink lists filter as you type and show where you are, which init's long repo and scope lists need. `DEV_PROMPTS=classic` gives init the inquirer look |
 | Config format | YAML | People edit it by hand, and it allows comments |
 | Tests | `node:test` with recorded responses | No extra framework |
 | Distribution | Public npm package `@tobias.istvan/dev`, command `dev` | `npm i -g @tobias.istvan/dev`, no repository access needed |
+| Publishing | A GitHub release stages the package on npm through trusted publishing, with provenance; it goes live after a 2FA approval | No npm token anywhere, and nothing is published without the person |
 | Licence | MIT | |
 
 ## Phases
@@ -384,12 +389,11 @@ sweep, worked through the `tasks`, `links` and `contribute` capabilities unchang
    `scope` and `login`.
 4. **GitHub Issues**: a second tracker, to prove the interface without core changes.
 5. **More plugins**: Notion, GitLab, GitHub Projects, Figma.
-6. **Release**: CI, npm publishing, README and getting started, then 0.1.0.
+6. **Release**: CI, npm publishing, README and getting started.
+7. **Task workflow**: see [workflow.md](workflow.md).
 
 ## Open questions
 
-- **npm account.** Publishing `@tobias.istvan/dev` needs an npm user or organisation
-  called `tobias.istvan`. Needed by phase 6.
 - **Task folder names** when two services use the same id format.
 - **Command name clashes.** Another tool may already install `dev`. Worth an alias, like
   `devw`, if it turns out to be common.

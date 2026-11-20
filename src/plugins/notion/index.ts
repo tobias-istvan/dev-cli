@@ -8,6 +8,7 @@ import { buildIndex } from "../../core/indexes.ts";
 import { localLookup, localizeFile, scopeCommand } from "../../core/links.ts";
 import { describeError, DevError, OutsideScope } from "../../core/output.ts";
 import { chooseMany, secret } from "../../core/prompt.ts";
+import { count, step, tally } from "../../core/progress.ts";
 import { NotionApi, normaliseId } from "./api.ts";
 import { blocksToMarkdown, richText, type Block, type RichText } from "./markdown.ts";
 
@@ -241,8 +242,11 @@ async function sync(context: ServiceContext): Promise<SyncReport> {
   const local = await localPages(context);
   const notion = api(context);
   const seen = new Set<string>();
-  for (const [id, kind] of [...pages.map((id) => [id, "page"] as const), ...databases.map((id) => [id, "database"] as const)]) {
+  const roots = [...pages.map((id) => [id, "page"] as const), ...databases.map((id) => [id, "database"] as const)];
+  const tick = tally(context.progress, roots.length, "page tree");
+  for (const [id, kind] of roots) {
     await syncChild(context, { api: notion, local, report, via: "scope", root: id, seen }, id, folder(context), kind);
+    tick();
   }
 
   // Pages in scope before and not reached now stay, marked: moved, deleted, or the root left.
@@ -259,7 +263,9 @@ async function refresh(context: ServiceContext): Promise<SyncReport> {
   const local = await localPages(context);
   const notion = api(context);
   const scoped = new Map<string, boolean>();
+  const tick = tally(context.progress, local.size, "page");
   for (const [id, page] of local) {
+    tick();
     if (page.data.database === true) continue;
     try {
       // One small request tells if the page changed; only changed pages are checked against
@@ -331,7 +337,12 @@ export const notionService: Service = {
     },
     async choose(context) {
       const notion = api(context);
-      const found = await notion.all<{ object: string; id: string; title?: RichText[]; properties?: Page["properties"] }>("POST", "/search", {});
+      const found = await step(
+        context.out,
+        "Finding the pages and databases the integration can see",
+        (report) => notion.all<{ object: string; id: string; title?: RichText[]; properties?: Page["properties"] }>("POST", "/search", {}, (n) => report(`${n} so far`)),
+        (results) => `Found ${count(results.length, "page or database", "pages and databases")}`,
+      );
       const options = found
         .filter((r) => r.object === "database" || r.object === "page")
         .map((r) => ({ value: `${r.object}:${r.id}`, name: `${r.object === "database" ? "Database" : "Page"}: ${r.object === "database" ? richText(r.title) : titleOf(r as unknown as Page)}` }));

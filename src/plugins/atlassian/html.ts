@@ -1,10 +1,69 @@
-import { load } from "cheerio";
+import { is, selectAll, selectOne } from "css-select";
+import render from "dom-serializer";
+import { type AnyNode, type Document, type Element, isTag } from "domhandler";
+import { prepend, removeElement, textContent } from "domutils";
+import { parseDocument } from "htmlparser2";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
 
 // HTML and Confluence storage format to Markdown, shared by Jira and Confluence.
 
-export type CheerioApi = ReturnType<typeof load>;
+/**
+ * A parsed page and how it was parsed. Confluence storage format is XML, so it's parsed as
+ * XML (which keeps namespaced ac:/ri: tags and CDATA intact); Jira's rendered HTML as HTML.
+ * Markup added while rewriting is parsed the same way as the page it goes into.
+ */
+export interface Markup {
+  doc: Document;
+  xml: boolean;
+}
+
+function parse(source: string, xml: boolean): Markup {
+  return { doc: parseDocument(source, { xmlMode: xml }), xml };
+}
+
+/** Every element matching `query` under `root`, not counting `root` itself, in document order. */
+function all(markup: Markup, query: string, root: AnyNode = markup.doc): Element[] {
+  return selectAll<AnyNode, Element>(query, root, { xmlMode: markup.xml });
+}
+
+function first(markup: Markup, query: string, root: AnyNode): Element | null {
+  return selectOne<AnyNode, Element>(query, root, { xmlMode: markup.xml });
+}
+
+function children(markup: Markup, el: Element, query: string): Element[] {
+  return el.children.filter(isTag).filter((child) => is<AnyNode, Element>(child, query, { xmlMode: markup.xml }));
+}
+
+/** The text of every element matching `query` under `root`, run together. */
+function textOf(markup: Markup, query: string, root: AnyNode): string {
+  return all(markup, query, root).map((el) => textContent(el)).join("");
+}
+
+function serialize(markup: Markup, nodes: AnyNode | AnyNode[]): string {
+  return render(nodes, markup.xml ? { xmlMode: true } : { encodeEntities: "utf8" });
+}
+
+/** What's inside `el`, as markup. */
+function inner(markup: Markup, el: Element | null): string | null {
+  return el ? serialize(markup, el.children) : null;
+}
+
+/** Parses `source` and puts it just before `el`. */
+function insertBefore(markup: Markup, el: Element, source: string): void {
+  // Copied first: moving a node takes it out of the list being walked.
+  for (const node of [...parse(source, markup.xml).doc.children]) prepend(el, node);
+}
+
+/** Parses `source` and puts it in place of `el`. */
+function replaceWith(markup: Markup, el: Element, source: string): void {
+  insertBefore(markup, el, source);
+  removeElement(el);
+}
+
+/** The parts of a DOM node the rules below read. The lib has no DOM types to give them. */
+type DomNode = { nodeName: string; firstChild: DomNode | null; parentNode: { childNodes: ArrayLike<unknown> } | null };
+const dom = (node: unknown) => node as DomNode;
 
 /**
  * A turndown instance configured the way both the Confluence and Jira syncs
@@ -22,9 +81,9 @@ export function createTurndownService(): TurndownService {
   service.keep(["details", "summary"]);
 
   service.addRule("fencedCodeBlockWithLanguage", {
-    filter: (node) => node.nodeName === "PRE" && node.firstChild?.nodeName === "CODE",
+    filter: (node) => dom(node).nodeName === "PRE" && dom(node).firstChild?.nodeName === "CODE",
     replacement: (_content, node) => {
-      const codeEl = node.firstChild as unknown as { getAttribute(name: string): string | null; textContent: string | null };
+      const codeEl = dom(node).firstChild as unknown as { getAttribute(name: string): string | null; textContent: string | null };
       const language = (codeEl.getAttribute("class") || "").replace("language-", "");
       const code = codeEl.textContent || "";
       return `\n\n\`\`\`${language}\n${code.replace(/\n$/, "")}\n\`\`\`\n\n`;
@@ -40,7 +99,8 @@ export function createTurndownService(): TurndownService {
     filter: ["th", "td"],
     replacement: (content, node) => {
       const collapsed = content.trim().replace(/\n+/g, "<br>");
-      const siblings = node.parentNode ? Array.from(node.parentNode.childNodes) : [];
+      const parent = dom(node).parentNode;
+      const siblings = parent ? Array.from(parent.childNodes) : [];
       const isFirst = siblings.indexOf(node) === 0;
       return (isFirst ? "| " : " ") + collapsed + " |";
     },
@@ -55,11 +115,8 @@ export function createTurndownService(): TurndownService {
  * an element converts cleanly, but turndown emits raw HTML verbatim for
  * anything it keeps, so they otherwise leak into the output in bulk.
  */
-export function stripBookkeepingAttributes($: CheerioApi): void {
-  $("*").each((_i, el) => {
-    const attribs = (el as { attribs?: Record<string, string> }).attribs;
-    if (!attribs) return;
-
+export function stripBookkeepingAttributes(markup: Markup): void {
+  for (const { attribs } of all(markup, "*")) {
     for (const name of Object.keys(attribs)) {
       if (
         name.startsWith("ac:") ||
@@ -71,11 +128,11 @@ export function stripBookkeepingAttributes($: CheerioApi): void {
         delete attribs[name];
       }
     }
-  });
+  }
 }
 
-function renameTag(el: unknown, tagName: "th" | "td"): void {
-  (el as { tagName: string }).tagName = tagName;
+function renameTag(el: Element, tagName: "th" | "td"): void {
+  el.name = tagName;
 }
 
 /**
@@ -90,40 +147,42 @@ function renameTag(el: unknown, tagName: "th" | "td"): void {
  * space keep their tables as raw HTML — unreadable, and far more expensive to
  * load into an agent's context than the equivalent Markdown.
  */
-export function normalizeTables($: CheerioApi): void {
-  $("table").each((_i, tableEl) => {
-    const $table = $(tableEl);
-
+export function normalizeTables(markup: Markup): void {
+  for (const table of all(markup, "table")) {
     // Column widths carry no meaning in Markdown, and a <colgroup> sitting
     // before <tbody> defeats the plugin's heading-row detection outright.
-    $table.children("colgroup").remove();
+    for (const colgroup of children(markup, table, "colgroup")) removeElement(colgroup);
 
-    const $rows = $table.find("tr");
-    if ($rows.length === 0) return;
+    const rows = all(markup, "tr", table);
+    const [firstRow] = rows;
+    if (!firstRow) {
+      // The plugin throws on a table without rows, failing the whole page. Keep what's
+      // in it, like a caption, and drop the table.
+      replaceWith(markup, table, inner(markup, table) ?? "");
+      continue;
+    }
 
-    const $firstRow = $rows.first();
-    const $firstRowCells = $firstRow.children("th, td");
-    if ($firstRowCells.length === 0) return;
+    const firstRowCells = children(markup, firstRow, "th, td");
+    if (firstRowCells.length === 0) continue;
 
     // Already a clean heading row — nothing to do.
-    if ($firstRow.children("th").length === $firstRowCells.length) return;
+    if (children(markup, firstRow, "th").length === firstRowCells.length) continue;
 
-    if ($table.find("th").length === 0) {
+    const headings = all(markup, "th", table);
+    if (headings.length === 0) {
       // Header row styled rather than marked up: promote it.
-      $firstRowCells.each((_j, cell) => renameTag(cell, "th"));
-      return;
+      for (const cell of firstRowCells) renameTag(cell, "th");
+      continue;
     }
 
     // Mixed <th>/<td> means row headers ("Status | Pending"), which GFM has no
     // way to express. Demote them to ordinary cells and prepend an empty
     // heading row so the table still converts instead of being left as HTML.
-    $table.find("th").each((_j, cell) => renameTag(cell, "td"));
+    for (const cell of headings) renameTag(cell, "td");
 
-    const columnCount = Math.max(
-      ...$rows.toArray().map((row) => $(row).children("th, td").length),
-    );
-    $firstRow.before(`<tr>${"<th></th>".repeat(columnCount)}</tr>`);
-  });
+    const columnCount = Math.max(...rows.map((row) => children(markup, row, "th, td").length));
+    insertBefore(markup, firstRow, `<tr>${"<th></th>".repeat(columnCount)}</tr>`);
+  }
 }
 
 const plainTurndown = createTurndownService();
@@ -136,11 +195,11 @@ const plainTurndown = createTurndownService();
 export function htmlToMarkdown(html: string): string {
   if (!html || !html.trim()) return "";
 
-  const $ = load(html, { xmlMode: false });
-  stripBookkeepingAttributes($);
-  normalizeTables($);
+  const markup = parse(html, false);
+  stripBookkeepingAttributes(markup);
+  normalizeTables(markup);
 
-  return plainTurndown.turndown($.html()).trim();
+  return plainTurndown.turndown(serialize(markup, markup.doc)).trim();
 }
 
 export interface MarkdownLinkResolver {
@@ -172,8 +231,8 @@ const turndownService = createTurndownService();
  *
  * Storage format can't be fed to an HTML->Markdown converter directly:
  * turndown's HTML parser doesn't understand ac:/ri: elements and silently
- * mangles their content. So we first walk the tree with cheerio (in XML
- * mode, which parses namespaced tags correctly) and rewrite every
+ * mangles their content. So we first parse it as XML (which keeps
+ * namespaced tags and CDATA intact) and rewrite every
  * Confluence macro into plain HTML, then hand the result to turndown.
  */
 export function convertStorageToMarkdown(
@@ -181,18 +240,17 @@ export function convertStorageToMarkdown(
   resolver: MarkdownLinkResolver,
 ): ConvertResult {
   const warnings: string[] = [];
-  const $ = load(storageHtml, { xmlMode: true });
+  const markup = parse(storageHtml, true);
 
   // Macros can nest (e.g. a "status" macro inside a "details" or "panel"
   // macro's rich-text-body). Unwrapping a macro re-parses its inner HTML as
   // new elements, which a single pass over a selector snapshot won't revisit.
   // So run every pass repeatedly until a pass leaves no ac:/ri: tags behind,
   // capped so malformed content can't spin forever.
-  const hasConfluenceTags = () =>
-    $("*").toArray().some((el) => (el as { tagName?: string }).tagName?.includes(":"));
+  const hasConfluenceTags = () => all(markup, "*").some((el) => el.name.includes(":"));
 
   for (let iteration = 0; iteration < 6 && hasConfluenceTags(); iteration += 1) {
-    runMacroPasses($, resolver, warnings);
+    runMacroPasses(markup, resolver, warnings);
   }
 
   // Only once every macro that has a specific handler has had its chance
@@ -201,176 +259,179 @@ export function convertStorageToMarkdown(
   // caught here before it gets routed to its own handler on the next pass.
   for (
     let iteration = 0;
-    iteration < 3 && $("ac\\:structured-macro").length > 0;
+    iteration < 3 && all(markup, "ac\\:structured-macro").length > 0;
     iteration += 1
   ) {
-    handleUnmappedMacros($, warnings);
+    handleUnmappedMacros(markup, warnings);
   }
 
   // --- safety net: unwrap any other stray ac:/ri: tag we didn't anticipate ---
-  $("*").each((_i, el) => {
-    const tagName = (el as { tagName?: string }).tagName;
-    if (tagName?.includes(":")) {
-      $(el).replaceWith($(el).text());
-    }
-  });
+  for (const el of all(markup, "*")) {
+    if (el.name.includes(":")) replaceWith(markup, el, textContent(el));
+  }
 
   // Tables are normalized after the macro passes, not before: a macro body
   // (e.g. "details") can itself contain a table, so a pre-pass would miss it.
-  stripBookkeepingAttributes($);
-  normalizeTables($);
+  stripBookkeepingAttributes(markup);
+  normalizeTables(markup);
 
-  const cleanedHtml = $.html();
+  const cleanedHtml = serialize(markup, markup.doc);
   const markdown = turndownService.turndown(cleanedHtml).trim() + "\n";
 
   return { markdown, warnings };
 }
 
+/** The value of `ac:name="name"` parameters under `el`, run together and trimmed. */
+function parameter(markup: Markup, el: Element, name: string): string {
+  return textOf(markup, `ac\\:parameter[ac\\:name="${name}"]`, el).trim();
+}
+
 function runMacroPasses(
-  $: ReturnType<typeof load>,
+  markup: Markup,
   resolver: MarkdownLinkResolver,
   warnings: string[],
 ): void {
   // --- images -------------------------------------------------------
-  $("ac\\:image").each((_i, el) => {
-    const attachment = $(el).find("ri\\:attachment").first();
-    const url = $(el).find("ri\\:url").first();
-    const alt = $(el).attr("ac:alt") || "";
+  for (const el of all(markup, "ac\\:image")) {
+    const attachment = first(markup, "ri\\:attachment", el);
+    const url = first(markup, "ri\\:url", el);
+    const alt = el.attribs["ac:alt"] || "";
 
     let src: string | null = null;
-    if (attachment.length > 0) {
-      const filename = attachment.attr("ri:filename") || "";
+    if (attachment) {
+      const filename = attachment.attribs["ri:filename"] || "";
       src = resolver.resolveAttachment(filename);
       if (!src) warnings.push(`Image attachment not found: "${filename}"`);
-    } else if (url.length > 0) {
-      src = url.attr("ri:value") || null;
+    } else if (url) {
+      src = url.attribs["ri:value"] || null;
     }
 
-    $(el).replaceWith(
+    replaceWith(
+      markup,
+      el,
       src ? `<img src="${escapeAttr(src)}" alt="${escapeAttr(alt)}">` : alt,
     );
-  });
+  }
 
   // --- code blocks ----------------------------------------------------
-  $('ac\\:structured-macro[ac\\:name="code"]').each((_i, el) => {
-    const language =
-      $(el).find('ac\\:parameter[ac\\:name="language"]').text().trim() ||
-      "text";
-    const code = $(el).find("ac\\:plain-text-body").text();
-    const $pre = $("<pre><code></code></pre>");
-    $pre.find("code").addClass(`language-${language}`).text(code);
-    $(el).replaceWith($pre);
-  });
+  for (const el of all(markup, 'ac\\:structured-macro[ac\\:name="code"]')) {
+    const language = parameter(markup, el, "language") || "text";
+    const code = textOf(markup, "ac\\:plain-text-body", el);
+    replaceWith(
+      markup,
+      el,
+      `<pre><code class="language-${escapeAttr(language)}">${escapeText(code)}</code></pre>`,
+    );
+  }
 
   // --- task lists -------------------------------------------------------
-  $("ac\\:task-list").each((_i, el) => {
-    const items = $(el)
-      .find("ac\\:task")
-      .toArray()
+  for (const el of all(markup, "ac\\:task-list")) {
+    const items = all(markup, "ac\\:task", el)
       .map((taskEl) => {
-        const status = $(taskEl).find("ac\\:task-status").text().trim();
-        const body = $(taskEl).find("ac\\:task-body").html() ?? "";
+        const status = textOf(markup, "ac\\:task-status", taskEl).trim();
+        const body = inner(markup, first(markup, "ac\\:task-body", taskEl)) ?? "";
         const checked = status === "complete" ? " checked" : "";
         return `<li><input type="checkbox"${checked} disabled>${body}</li>`;
       })
       .join("");
-    $(el).replaceWith(`<ul>${items}</ul>`);
-  });
+    replaceWith(markup, el, `<ul>${items}</ul>`);
+  }
 
   // --- panels (info/note/tip/warning) and expandable sections --------
-  $("ac\\:structured-macro").each((_i, el) => {
-    const name = $(el).attr("ac:name") || "";
-    const bodyHtml = $(el).find("ac\\:rich-text-body").first().html() ?? "";
+  for (const el of all(markup, "ac\\:structured-macro")) {
+    const name = el.attribs["ac:name"] || "";
+    const bodyHtml = inner(markup, first(markup, "ac\\:rich-text-body", el)) ?? "";
 
     if (name in PANEL_MACROS) {
-      $(el).replaceWith(
+      replaceWith(
+        markup,
+        el,
         `\n<blockquote><p><strong>${PANEL_MACROS[name]}</strong></p>${bodyHtml}</blockquote>\n`,
       );
     } else if (name === "panel") {
-      const title = $(el)
-        .find('ac\\:parameter[ac\\:name="title"]')
-        .text()
-        .trim();
+      const title = parameter(markup, el, "title");
       const heading = title
         ? `<p><strong>${escapeText(title)}</strong></p>`
         : "";
-      $(el).replaceWith(`\n<blockquote>${heading}${bodyHtml}</blockquote>\n`);
+      replaceWith(markup, el, `\n<blockquote>${heading}${bodyHtml}</blockquote>\n`);
     } else if (name === "expand") {
-      const title =
-        $(el).find('ac\\:parameter[ac\\:name="title"]').text().trim() ||
-        "Details";
-      $(el).replaceWith(
+      const title = parameter(markup, el, "title") || "Details";
+      replaceWith(
+        markup,
+        el,
         `\n<details><summary>${escapeText(title)}</summary>${bodyHtml}</details>\n`,
       );
     } else if (name === "details") {
       // The "details" macro is a properties box (usually a small table), not
       // a collapsible section - unwrap it in place rather than dropping it.
-      $(el).replaceWith(`\n${bodyHtml}\n`);
+      replaceWith(markup, el, `\n${bodyHtml}\n`);
     } else if (name === "status") {
-      const title =
-        $(el).find('ac\\:parameter[ac\\:name="title"]').text().trim() ||
-        "status";
-      $(el).replaceWith(`<code>${escapeText(title)}</code>`);
+      const title = parameter(markup, el, "title") || "status";
+      replaceWith(markup, el, `<code>${escapeText(title)}</code>`);
     } else if (name === "jira") {
-      const key = $(el).find('ac\\:parameter[ac\\:name="key"]').text().trim();
+      const key = parameter(markup, el, "key");
       if (key) {
-        $(el).replaceWith(
+        replaceWith(
+          markup,
+          el,
           `<a href="${escapeAttr(resolver.jiraBrowseUrl(key))}">${escapeText(key)}</a>`,
         );
       }
     }
-  });
+  }
 
   // --- layout wrappers: keep content, drop the columns ----------------
-  $("ac\\:layout, ac\\:layout-section, ac\\:layout-cell").each((_i, el) => {
-    $(el).replaceWith($(el).html() ?? "");
-  });
+  for (const el of all(markup, "ac\\:layout, ac\\:layout-section, ac\\:layout-cell")) {
+    replaceWith(markup, el, inner(markup, el) ?? "");
+  }
 
   // --- emoticons --------------------------------------------------------
-  $("ac\\:emoticon").each((_i, el) => {
-    $(el).replaceWith($(el).attr("ac:emoji-fallback") || "");
-  });
+  for (const el of all(markup, "ac\\:emoticon")) {
+    replaceWith(markup, el, el.attribs["ac:emoji-fallback"] || "");
+  }
 
   // --- links (to pages, attachments, external URLs, or users) --------
-  $("ac\\:link").each((_i, el) => {
-    const pageRef = $(el).find("ri\\:page").first();
-    const attachmentRef = $(el).find("ri\\:attachment").first();
-    const urlRef = $(el).find("ri\\:url").first();
-    const userRef = $(el).find("ri\\:user").first();
+  for (const el of all(markup, "ac\\:link")) {
+    const pageRef = first(markup, "ri\\:page", el);
+    const attachmentRef = first(markup, "ri\\:attachment", el);
+    const urlRef = first(markup, "ri\\:url", el);
+    const userRef = first(markup, "ri\\:user", el);
 
-    const explicitText = $(el).find("ac\\:plain-text-link-body").text().trim();
+    const explicitText = textOf(markup, "ac\\:plain-text-link-body", el).trim();
 
     let href: string | null = null;
     let fallbackText = explicitText;
 
-    if (pageRef.length > 0) {
-      const title = pageRef.attr("ri:content-title") || "";
+    if (pageRef) {
+      const title = pageRef.attribs["ri:content-title"] || "";
       fallbackText = fallbackText || title;
       href = resolver.resolvePageLink(title);
       if (!href)
         warnings.push(
           `Could not resolve link to page "${title}" (not in this export)`,
         );
-    } else if (attachmentRef.length > 0) {
-      const filename = attachmentRef.attr("ri:filename") || "";
+    } else if (attachmentRef) {
+      const filename = attachmentRef.attribs["ri:filename"] || "";
       fallbackText = fallbackText || filename;
       href = resolver.resolveAttachment(filename);
       if (!href)
         warnings.push(`Could not resolve link to attachment "${filename}"`);
-    } else if (urlRef.length > 0) {
-      href = urlRef.attr("ri:value") || null;
+    } else if (urlRef) {
+      href = urlRef.attribs["ri:value"] || null;
       fallbackText = fallbackText || href || "";
-    } else if (userRef.length > 0) {
-      const accountId = userRef.attr("ri:account-id") || "";
+    } else if (userRef) {
+      const accountId = userRef.attribs["ri:account-id"] || "";
       fallbackText = fallbackText || `@${accountId}`;
       warnings.push(`User mention left unresolved: "${accountId}"`);
     }
 
     const text = escapeText(fallbackText || "link");
-    $(el).replaceWith(
+    replaceWith(
+      markup,
+      el,
       href ? `<a href="${escapeAttr(href)}">${text}</a>` : text,
     );
-  });
+  }
 }
 
 // Anything left unmapped (toc, jira, children, excerpt, ...). Best effort:
@@ -378,23 +439,22 @@ function runMacroPasses(
 // macro's content outright, just flag it as unhandled. Kept separate from
 // runMacroPasses and run only after that loop settles, so a macro exposed
 // mid-iteration still gets a chance at its own specific handler first.
-function handleUnmappedMacros(
-  $: ReturnType<typeof load>,
-  warnings: string[],
-): void {
-  $("ac\\:structured-macro").each((_i, el) => {
-    const name = $(el).attr("ac:name") || "unknown";
+function handleUnmappedMacros(markup: Markup, warnings: string[]): void {
+  for (const el of all(markup, "ac\\:structured-macro")) {
+    const name = el.attribs["ac:name"] || "unknown";
+    const plain = first(markup, "ac\\:plain-text-body", el);
     const bodyHtml =
-      $(el).find("ac\\:rich-text-body").first().html() ??
-      $(el).find("ac\\:plain-text-body").first().text() ??
-      "";
+      inner(markup, first(markup, "ac\\:rich-text-body", el)) ??
+      (plain ? textContent(plain) : "");
     warnings.push(
       `Unsupported macro "${name}" was ${bodyHtml ? "kept as best-effort content" : "dropped (kept as a placeholder)"}`,
     );
-    $(el).replaceWith(
+    replaceWith(
+      markup,
+      el,
       `\n<p><em>[Confluence macro: ${escapeText(name)}]</em></p>${bodyHtml}\n`,
     );
-  });
+  }
 }
 
 function escapeAttr(value: string): string {

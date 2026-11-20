@@ -51,6 +51,7 @@ export function serviceContext(
     async references(text) {
       return tools ? resolveReferences(tools, text, entry.key) : [];
     },
+    progress() {},
     async localize(body, file) {
       if (!tools) return body;
       localizer ??= createLocalizer(tools);

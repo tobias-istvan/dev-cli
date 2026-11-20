@@ -12,12 +12,36 @@ function requireTerminal(flag: string): void {
   }
 }
 
+/**
+ * Which look the questions have. "ink" is turned on by dev init alone, through withInkPrompts. DEV_PROMPTS=classic turns it off.
+ */
+let style: "classic" | "ink" = "classic";
+
+/** Asks every question `task` asks with ink, then goes back to the classic look. */
+export async function withInkPrompts<R>(task: () => Promise<R>): Promise<R> {
+  const previous = style;
+  style = process.env.DEV_PROMPTS === "classic" ? "classic" : "ink";
+  try {
+    return await task();
+  } finally {
+    style = previous;
+  }
+}
+
+const ink = () => import("./ink-prompts.ts");
+
+/** Whether questions and progress are drawn with ink right now. */
+export function usingInk(): boolean {
+  return style === "ink" && Boolean(process.stdout.isTTY);
+}
+
 /** Lists longer than this are searched by typing rather than scrolled through. */
 const SHORT_LIST = 8;
 
 export async function choose<T extends string>(message: string, choices: Array<{ value: T; name: string; description?: string }>, flag: string): Promise<T> {
   if (choices.length > SHORT_LIST) return search(message, choices, flag);
   requireTerminal(flag);
+  if (style === "ink") return (await ink()).pickOne(message, choices, rank);
   const { select } = await import("@inquirer/prompts");
   return select({ message, choices });
 }
@@ -25,6 +49,7 @@ export async function choose<T extends string>(message: string, choices: Array<{
 /** Choosing several: type to filter, Tab to pick, Enter when done. With `optional`, none is an answer. */
 export async function chooseMany<T extends string>(message: string, choices: Array<{ value: T; name: string; description?: string; checked?: boolean }>, flag: string, optional = false): Promise<T[]> {
   requireTerminal(flag);
+  if (style === "ink") return (await ink()).pickMany(message, choices, rank, optional);
   const { searchMany } = await import("./search-many.ts");
   return searchMany({ message, choices, rank, optional }) as Promise<T[]>;
 }
@@ -84,6 +109,7 @@ export function rank<T extends { name: string; description?: string }>(term: str
 /** Choosing from a long list by typing any part of a name, ranked by how close it is. */
 export async function search<T extends string>(message: string, choices: Array<{ value: T; name: string; description?: string }>, flag: string): Promise<T> {
   requireTerminal(flag);
+  if (style === "ink") return (await ink()).pickOne(message, choices, rank);
   const { search: ask } = await import("@inquirer/prompts");
   return ask({ message, pageSize: 12, source: (term) => rank(term ?? "", choices) });
 }
@@ -98,6 +124,7 @@ export async function searchRemote<T extends string>(
   flag: string,
 ): Promise<T> {
   requireTerminal(flag);
+  if (style === "ink") return (await ink()).pickRemote(message, find, rank);
   const { search: ask } = await import("@inquirer/prompts");
   return ask({
     message,
@@ -113,18 +140,21 @@ export async function searchRemote<T extends string>(
 
 export async function secret(message: string, flag: string): Promise<string> {
   requireTerminal(flag);
+  if (style === "ink") return (await ink()).text(message, { mask: true });
   const { password } = await import("@inquirer/prompts");
   return password({ message, mask: "*" });
 }
 
 export async function confirm(message: string, flag: string, initial = true): Promise<boolean> {
   requireTerminal(flag);
+  if (style === "ink") return (await ink()).yesNo(message, initial);
   const { confirm: ask } = await import("@inquirer/prompts");
   return ask({ message, default: initial });
 }
 
 export async function ask(message: string, flag: string, initial?: string): Promise<string> {
   requireTerminal(flag);
+  if (style === "ink") return (await ink()).text(message, { initial, required: true });
   const { input } = await import("@inquirer/prompts");
   return input({ message, default: initial, required: true });
 }

@@ -2,12 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { atomicWrite, atomicWriteSync, safePath } from "../../core/files.ts";
-import type { AtlassianClient } from "./client.ts";
+import { atomicWrite, atomicWriteSync, safePath } from "./files.ts";
 
 /**
  * Attachments, kept next to the page or ticket they belong to, in its attachments/ folder.
- * Shared by Confluence and Jira.
+ * Shared by Confluence, Jira and GitHub Projects.
  */
 
 export interface RemoteAttachment {
@@ -15,7 +14,7 @@ export interface RemoteAttachment {
   key: string;
   /** Its filename in the service. */
   title: string;
-  /** Where to download it, on the site. */
+  /** Where to download it, as the downloader understands it, like a path on the site. */
   link: string;
   /** Changes when the content does. Without one, it's downloaded every time. */
   version?: number;
@@ -42,7 +41,7 @@ function attachmentName(title: string, suffix: string): string {
  * `own`, where the folder is the mirror's alone, and otherwise only files an earlier sync
  * put there, so a person's own are left.
  */
-export async function mirrorAttachments(api: AtlassianClient, dir: string, attachments: RemoteAttachment[], warn: (message: string) => void, own: boolean): Promise<Map<string, string>> {
+export async function mirrorAttachments(api: { download(link: string): Promise<Buffer> }, dir: string, attachments: RemoteAttachment[], warn: (message: string) => void, own: boolean): Promise<Map<string, string>> {
   const recordFile = safePath(dir, ".attachments.json");
   let previous: Record<string, { version?: number; name: string }> = {};
   try { previous = JSON.parse(await readFile(recordFile, "utf8")); } catch {}
