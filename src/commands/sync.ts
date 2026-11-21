@@ -1,5 +1,6 @@
 import { splitFrontMatter } from "../core/front-matter.ts";
 import { buildServiceIndex, serviceFiles } from "../core/indexes.ts";
+import { recordChanges } from "../core/changes.ts";
 import { createLocalizer, localizeFile, readOutside, scopeCommand, writeOutside } from "../core/links.ts";
 import type { Registry } from "../plugins/registry.ts";
 import { existsSync } from "node:fs";
@@ -204,6 +205,17 @@ export async function syncServices(root: string, config: ProjectConfig, registry
   } catch (error) {
     ok = false;
     out.warn(`Couldn't point links at the local copies. ${(error as Error).message}`);
+  }
+  try {
+    const { changes, report } = await recordChanges(root, config, registry, entries.map((entry) => entry.service.title).join(", "));
+    if (changes === null) out.info("Changes: this sync set the baseline. From the next one, what changes is recorded in work-sessions/<date>/changes.md.");
+    else if (changes.length > 0) {
+      const tasks = [...new Set(changes.flatMap((change) => change.tasks))].sort();
+      out.info(`Changes: ${count(changes.length, "item")}${tasks.length > 0 ? `, affecting ${tasks.join(", ")}` : ""}. See ${report}.`);
+    }
+  } catch (error) {
+    ok = false;
+    out.warn(`Couldn't record what changed. ${(error as Error).message}`);
   }
   return ok;
 }

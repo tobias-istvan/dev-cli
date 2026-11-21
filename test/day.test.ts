@@ -57,7 +57,7 @@ test("sync runs each service and reports what changed, and a failure is reported
   const root = workspace();
   const ok = dev(root, ["sync"]);
   assert.equal(ok.code, 0, ok.err);
-  assert.match(ok.out, /Example notes: 1 new, 0 updated, 0 removed\.\nDone: synced\./);
+  assert.match(ok.out, /Example notes: 1 new, 0 updated, 0 removed\.\nChanges: this sync set the baseline\. From the next one, what changes is recorded in work-sessions\/<date>\/changes\.md\.\nDone: synced\./);
   assert.ok(existsSync(path.join(root, "notes", "N-5.md")));
 
   const broken = dev(workspace("broken"), ["sync"]);

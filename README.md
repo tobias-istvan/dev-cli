@@ -201,8 +201,8 @@ web/
   snapshot.md              what to work on, rewritten by dev day start
   repository/              the code (not committed)
   worktrees/<task>/        one checkout per task or review (not committed)
-  tasks/<task>/            brief.md, progress.md, pr-description.md: never removed
-  work-sessions/<date>/    the day's summary and saved agent sessions
+  tasks/<task>/            brief.md, progress.md, changes.md, pr-description.md: never removed
+  work-sessions/<date>/    the day's summary, source changes and saved agent sessions
   pull-requests/<N>/       GitHub pull requests to review, with review.md
   merge-requests/<N>/      GitLab merge requests to review, with review.md
   jira/<KEY>/ticket.md     one folder per ticket
@@ -557,6 +557,42 @@ The original address stays as the link's title. A link that is still a web addre
 local copy. Links inside items that were themselves fetched as links aren't followed further. This limits what dev fetches, not what
 the token could reach.
 
+### What changed
+
+Every sync ends by working out what changed in the sources since the last one, so nobody has
+to commit to see it. dev keeps each item as the last sync left it in `.dev/state/items.json`,
+compares the files with it, and records:
+
+- items added, moved, deleted in the service, gone from the workspace, or out of the scope
+- front matter fields that changed, like `status: In Progress → In Review`
+- body sections that changed, by heading
+- comments added
+
+A field or section that changed while the item's `updated` didn't is dev drawing the file
+differently, after an upgrade say, and isn't recorded. The first sync only sets the baseline.
+
+What changed goes in two places:
+
+- **`work-sessions/<date>/changes.md`**: a section for each sync that changed something, each
+  item with what changed and the tasks it affects. The day summary links it.
+- **`tasks/<id>/changes.md`**: a `new` entry for each change to one of the task's sources,
+  for every task folder, finished ones included. A task's sources are the files its brief links
+  to and lists in `sources:`, the item with the task's id, and their parents and links.
+
+```markdown
+## C2 · atlassian:jira · new
+
+- Item: [jira/ABC-123/ticket.md](../../jira/ABC-123/ticket.md)
+- Changed: 2 comments added; status: In Progress → In Review; section changed: Acceptance criteria
+- Report: [work-sessions/2026-11-20/changes.md](../../work-sessions/2026-11-20/changes.md)
+- Recorded: 2026-11-20 09:14
+
+ABC-123 · Sort the order list
+```
+
+Once you've worked out what an entry means for the task, set its status to `reviewed` and add
+`- Led to:` with what it changed. Ids are never reused.
+
 ### One sync at a time
 
 A running `dev sync` or `dev day start` marks itself in `.dev/state/sync.json`. Another sync
@@ -671,7 +707,8 @@ never with uncommitted changes, and never when the local branch has its own comm
 ### The day summary
 
 `dev day end` writes `work-sessions/<date>/summary.md`. Its facts (sessions, commits, task
-notes changed, what changed in each service) are rebuilt every run. Its four written sections,
+notes changed, what changed in each service, and a link to the day's source changes) are
+rebuilt every run. Its four written sections,
 **What happened, Decisions, Next steps and Blocked**, are kept: fill them in. Tomorrow's
 snapshot and the next session start from your Next steps.
 
