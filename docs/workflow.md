@@ -273,7 +273,7 @@ Each step is useful on its own.
    each task's sources from the link graph, and `changes.md` in each affected task. Done
    when a sync after a ticket edit says what changed and which tasks it affects, with no
    commit.
-2. **The task record.** Entry formats defined once, the parser, `dev task status` with the
+2. **The task record** (built in 0.4). Entry formats defined once, the parser, `dev task status` with the
    record's state, the brief's new front matter, warnings in `dev doctor`, reading old
    briefs. Done when `dev task status ABC-123` reports a hand-written record correctly.
 3. **Skills.** `task-understand`, then `task-plan` with the verification plan, then
