@@ -27,6 +27,7 @@ import {
   type WorktreeState,
 } from "../core/worktree.ts";
 import { requireWorkspaceRoot } from "../core/workspace.ts";
+import { describeRecord, readRecord, recordNotes } from "../core/task-record.ts";
 
 export interface StartOptions {
   title?: string;
@@ -127,37 +128,54 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   out.info(`\nDone: next, fill in tasks/${id}/brief.md and work in worktrees/${id}. Nothing was pushed.`);
 }
 
-export async function runTaskStatus(out: Output, id?: string): Promise<void> {
+export async function runTaskStatus(out: Output, id: string | undefined, options: { json?: boolean } = {}): Promise<void> {
   const root = requireWorkspaceRoot();
   const baseFor = basesFor(root, await workspaceBase(requireClone(root), loadConfig(root)));
 
   if (id) {
-    if (!existsSync(worktreeDir(root, id))) {
-      throw new DevError(`There's no worktree for ${id}.`, `Start it with "dev task start ${id}".`);
+    const hasWorktree = existsSync(worktreeDir(root, id));
+    if (!hasWorktree && !existsSync(taskDir(root, id))) {
+      throw new DevError(`There's no worktree for ${id}, and no tasks/${id}/.`, `Start it with "dev task start ${id}".`);
     }
-    const state = await inspectWorktree(root, id, await baseFor(id));
-    const base = state.base;
-    out.info(`${id} on ${state.branch}`);
-    out.info(`Commits not yet in ${base}: ${state.unmerged.length}${state.unmerged.map((c) => `\n  ${c}`).join("")}`);
-    out.info(`Files changed: ${state.changed.length}${state.changed.map((f) => `\n  ${f}`).join("")}`);
-    out.info(`Uncommitted: ${state.dirty.length}${state.dirty.map((f) => `\n  ${f}`).join("")}`);
-    if (state.behind > 0) out.info(`${base} has moved on by ${state.behind} commit${state.behind === 1 ? "" : "s"} since this branch started.`);
-    out.info(`Notes: tasks/${id}/${existsSync(taskDir(root, id)) ? "" : " (missing)"}`);
+    const state = hasWorktree ? await inspectWorktree(root, id, await baseFor(id)) : null;
+    const record = await readRecord(root, id);
+    if (options.json) {
+      console.log(JSON.stringify({ id, worktree: state, record }, null, 2));
+      return;
+    }
+    if (state) {
+      const base = state.base;
+      out.info(`${id} on ${state.branch}`);
+      out.info(`Commits not yet in ${base}: ${state.unmerged.length}${state.unmerged.map((c) => `\n  ${c}`).join("")}`);
+      out.info(`Files changed: ${state.changed.length}${state.changed.map((f) => `\n  ${f}`).join("")}`);
+      out.info(`Uncommitted: ${state.dirty.length}${state.dirty.map((f) => `\n  ${f}`).join("")}`);
+      if (state.behind > 0) out.info(`${base} has moved on by ${state.behind} commit${state.behind === 1 ? "" : "s"} since this branch started.`);
+    } else {
+      out.info(`${id}: no worktree, only its record`);
+    }
+    out.info(`\nRecord: tasks/${id}/${record.exists ? "" : " (missing)"}`);
+    if (record.exists) for (const line of describeRecord(record)) out.info(line);
     return;
   }
 
   const ids = await worktreeIds(root);
   if (ids.length === 0) {
-    out.info('No tasks in flight. Start one with "dev task start <ref>".');
+    if (options.json) console.log(JSON.stringify({ tasks: [], broken: [] }, null, 2));
+    else out.info('No tasks in flight. Start one with "dev task start <ref>".');
     return;
   }
   const { states, broken } = await inspectWorktrees(root, baseFor);
+  const tasks = await Promise.all(states.map(async (state) => ({ id: state.id, worktree: state, record: await readRecord(root, state.id) })));
+  if (options.json) {
+    console.log(JSON.stringify({ tasks, broken }, null, 2));
+    return;
+  }
   for (const { id: each, reason } of broken) out.warn(`${each}  can't be read: ${reason}`);
-  for (const state of states) {
-    const each = state.id;
+  for (const { id: each, worktree: state, record } of tasks) {
     const parts = [`${state.unmerged.length} commit${state.unmerged.length === 1 ? "" : "s"}`, `${state.dirty.length} uncommitted`];
     if (state.behind > 0) parts.push(`${state.behind} behind ${state.base}`);
-    out.info(`${each}  ${state.branch}  ${parts.join(", ")}`);
+    const notes = recordNotes(record);
+    out.info(`${each}  ${state.branch}  ${parts.join(", ")}${notes.length > 0 ? `  · ${notes.join(" · ")}` : ""}`);
   }
 }
 

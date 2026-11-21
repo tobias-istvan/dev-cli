@@ -71,6 +71,8 @@ title: ${JSON.stringify(context.title)}
 branch: ${JSON.stringify(context.branch)}
 base: ${JSON.stringify(context.base)}
 worktree: ${JSON.stringify(`worktrees/${context.id}`)}
+round: 1
+sources: [] # workspace files that matter but the Sources links don't reach; dev sync watches them too
 ---
 
 # ${context.title}

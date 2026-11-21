@@ -14,6 +14,9 @@ export async function runDoctor(program: Command, registry: Registry, out: Outpu
   const report = await doctor(root, registry, out, { offline, commands: workspaceCommands(program, registry, config) });
 
   for (const note of report.notes) out.info(note);
+  if (report.warnings.length > 0) {
+    out.warn(`${report.warnings.length} task record warning${report.warnings.length === 1 ? "" : "s"}, from entries that don't follow the format:\n${report.warnings.map((w) => `  ${w}`).join("\n")}`);
+  }
   if (report.problems.length === 0) {
     out.info("No problems found.");
     return;
