@@ -39,6 +39,8 @@ export interface LogFormat {
   /** What the kind is, for the skills. */
   kindMeaning?: string;
   fields: readonly FieldFormat[];
+  /** A well-formed entry, shown in the skills. */
+  example: Entry;
 }
 
 export const FINDINGS: LogFormat = {
@@ -55,6 +57,17 @@ export const FINDINGS: LogFormat = {
     { name: "Answer from", meaning: "Who can answer it" },
     { name: "Answer", meaning: "The answer, and who gave it" },
   ],
+  example: {
+    number: 3,
+    kind: "conflict",
+    status: "open",
+    fields: [
+      ["Sources", "jira/ABC-123/ticket.md (Acceptance criteria), figma/abc-12-34/design.md"],
+      ["Blocks", "yes"],
+      ["Answer from", "the ticket's reporter"],
+    ],
+    text: "The ticket sorts the list by date; the design sorts it by name.",
+  },
 };
 
 export const DECISIONS: LogFormat = {
@@ -68,6 +81,16 @@ export const DECISIONS: LogFormat = {
     { name: "Why", meaning: "The reason for the choice" },
     { name: "Alternatives", meaning: "What else was considered" },
   ],
+  example: {
+    number: 2,
+    status: "",
+    fields: [
+      ["Resolves", "F3"],
+      ["Why", "the reporter answered on the ticket: by date"],
+      ["Alternatives", "by name, as the design shows"],
+    ],
+    text: "Sort the list by date, newest first.",
+  },
 };
 
 export const VERIFICATION: LogFormat = {
@@ -84,6 +107,16 @@ export const VERIFICATION: LogFormat = {
     { name: "Expected", meaning: "The evidence expected" },
     { name: "Evidence", meaning: "What was found, linking to files in evidence/" },
   ],
+  example: {
+    number: 1,
+    kind: "The list sorts by date, newest first",
+    status: "planned",
+    fields: [
+      ["How", "a unit test of the sort, then the page with three orders"],
+      ["By", "test, then the agent"],
+      ["Expected", "the test passes; a screenshot with the newest order first"],
+    ],
+  },
 };
 
 export const CHANGES: LogFormat = {
@@ -104,6 +137,17 @@ export const CHANGES: LogFormat = {
     { name: "Recorded", meaning: "When the sync recorded it" },
     { name: "Led to", meaning: "The findings or decisions it led to, by id, or nothing", requiredWhen: "reviewed", refers: true },
   ],
+  example: {
+    number: 3,
+    kind: "atlassian:jira",
+    status: "reviewed",
+    fields: [
+      ["Item", "[jira/ABC-123/ticket.md](../../jira/ABC-123/ticket.md)"],
+      ["Changed", "section changed: Acceptance criteria"],
+      ["Led to", "F4, D3"],
+    ],
+    text: "ABC-123 · Sort the order list",
+  },
 };
 
 export const FOLLOW_UPS: LogFormat = {
@@ -116,6 +160,12 @@ export const FOLLOW_UPS: LogFormat = {
     { name: "Found in", meaning: "Where it was found: files, or the step of the work" },
     { name: "Filed as", meaning: "The issue it was filed as", requiredWhen: "filed" },
   ],
+  example: {
+    number: 1,
+    status: "noted",
+    fields: [["Found in", "src/orders/api.ts, while building paging"]],
+    text: "The orders API ignores page sizes over 100 without saying so.",
+  },
 };
 
 /** Every log in a task folder, in the order the record is read. */
@@ -149,6 +199,29 @@ export function renderEntry(format: LogFormat, entry: Entry): string {
 /** A new log file's opening: its title and what it's for. */
 export function logHeader(format: LogFormat): string {
   return `# ${format.title}\n\n${format.intro}\n`;
+}
+
+/** A log's format as the skills describe it, from this definition, so they can't drift. */
+export function describeFormat(format: LogFormat): string {
+  const shape = [`${format.prefix}<n>`, ...(format.kinds ? ["<kind>"] : []), ...(format.statuses.length > 0 ? ["<status>"] : [])].join(" · ");
+  const fields = format.fields.map((spec) => {
+    const notes = [...(spec.values ? [`${spec.values.join(" or ")}`] : []), ...(spec.requiredWhen ? [`needed once it's \`${spec.requiredWhen}\``] : [])];
+    return `  - \`${spec.name}\`: ${spec.meaning}${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`;
+  });
+  return [
+    `**\`${format.file}\`**: ${(format.intro.match(/^[\s\S]*?\.(?=\s|$)/)?.[0] ?? format.intro).replace(/\s*\n\s*/g, " ")}`,
+    "",
+    `- Heading: \`## ${shape}\`. Number from one more than the highest id in the file; never reuse an id.`,
+    ...(format.kinds ? [`- Kind: ${Array.isArray(format.kinds) ? `${format.kinds.map((k) => `\`${k}\``).join(", ")}. ` : ""}${format.kindMeaning}`] : []),
+    ...(format.statuses.length > 0 ? [`- Status: ${format.statuses.map((s) => `\`${s}\``).join(", ")}`] : []),
+    "- Fields, as `- Name: value` lines under the heading, then free text:",
+    ...fields,
+    `- A new file starts with \`# ${format.title}\` and a line saying what it holds.`,
+    "",
+    "```markdown",
+    renderEntry(format, format.example),
+    "```",
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------

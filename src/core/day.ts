@@ -8,6 +8,7 @@ import { workspaceServiceContext } from "./context.ts";
 import { git, gitMaybe } from "./git.ts";
 import { loadConfig, type ProjectConfig } from "./project-config.ts";
 import { enabledServices } from "./scaffold.ts";
+import { readRecord, recordIds, recordNotes } from "./task-record.ts";
 import { basesFor, workspaceBase } from "./tasks.ts";
 import { baseRef, defaultBranch, inspectWorktrees, remoteName, isSafeToRemove, repositoryDir, worktreeDir, worktreeIds } from "./worktree.ts";
 
@@ -128,6 +129,7 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
     for (const state of active) {
       const parts = [`${state.unmerged.length} commit${state.unmerged.length === 1 ? "" : "s"}`, `${state.dirty.length} uncommitted`];
       if (state.behind > 0) parts.push(`${state.base} has moved on by ${state.behind}`);
+      parts.push(...recordNotes(await readRecord(root, state.id)));
       lines.push(`- [${state.id}](tasks/${state.id}/brief.md) on \`${state.branch}\` · ${parts.join(", ")}`);
     }
     for (const { id, reason } of broken) lines.push(`- ${id}: git can't read this worktree (${reason})`);
@@ -135,6 +137,18 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
     if (idle.length > 0) {
       lines.push(`Worktrees with nothing left in them: ${idle.map((s) => s.id).join(", ")}. Remove with \`dev task cleanup --remove\`.`, "");
     }
+  }
+
+  // A finished task's sources changing is how a reopen first shows up.
+  const worktrees = new Set(await worktreeIds(root));
+  const changed: string[] = [];
+  for (const id of await recordIds(root)) {
+    if (worktrees.has(id)) continue;
+    const fresh = (await readRecord(root, id)).logs.changes.byStatus.new ?? [];
+    if (fresh.length > 0) changed.push(`[${id}](tasks/${id}/changes.md) (${fresh.join(", ")})`);
+  }
+  if (changed.length > 0) {
+    lines.push(`Finished tasks whose sources changed: ${changed.join(", ")}. A ticket back in an open status may mean it was reopened; \`task-changes\` reviews them.`, "");
   }
 
   for (const entry of enabledServices(config, registry)) {

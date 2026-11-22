@@ -317,7 +317,7 @@ test("dev files writes the agent files for the enabled services only", () => {
   const agents = readFileSync(path.join(root, "AGENTS.md"), "utf8");
   assert.match(agents, /`acme\/web`/);
   assert.match(agents, /\| `notes\/` \| Example notes: Team notes/);
-  assert.match(agents, /7\. Never post a note unless the person asks\./);
+  assert.match(agents, /8\. Never post a note unless the person asks\./);
   assert.match(agents, /dev task list --mine/);
   assert.match(agents, /\| `dev notes post <text>` \| Post a note \|/);
   assert.match(agents, /\| `dev doctor` \|/);

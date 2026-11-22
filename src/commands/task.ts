@@ -125,7 +125,7 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
     if (copy.result === "not ignored by git") out.warn(`Didn't copy ${copy.file}: git doesn't ignore it, so it could be committed by accident.`);
   }
   out.info(notes.length > 0 ? `Notes: wrote ${notes.join(", ")}` : `Notes: tasks/${id}/ already there and left as it was`);
-  out.info(`\nDone: next, fill in tasks/${id}/brief.md and work in worktrees/${id}. Nothing was pushed.`);
+  out.info(`\nDone: next, run the task-understand skill for ${id} to fill in tasks/${id}/brief.md. Nothing was pushed.`);
 }
 
 export async function runTaskStatus(out: Output, id: string | undefined, options: { json?: boolean } = {}): Promise<void> {

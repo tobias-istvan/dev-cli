@@ -5,6 +5,7 @@ import path from "node:path";
 import type { ServiceEntry } from "../plugins/types.ts";
 import type { Registry } from "../plugins/registry.ts";
 import { packageDir } from "./paths.ts";
+import { describeFormat, LOGS } from "./record.ts";
 import type { ProjectConfig } from "./project-config.ts";
 
 /**
@@ -42,7 +43,7 @@ function template(name: string): string {
 }
 
 function fill(text: string, values: Record<string, string>): string {
-  return text.replace(/\{\{(\w+)\}\}/g, (_, key: string) => values[key] ?? "");
+  return text.replace(/\{\{([\w:-]+)\}\}/g, (_, key: string) => values[key] ?? "");
 }
 
 function hash(text: string): string {
@@ -57,6 +58,20 @@ function cell(text: string): string {
 export function enabledServices(config: ProjectConfig, registry: Registry): ServiceEntry[] {
   const keys = [...(config.versioning ? [config.versioning.service] : []), ...config.services.map((s) => s.service)];
   return keys.map((key) => registry.service(key)).filter((entry): entry is ServiceEntry => entry !== undefined);
+}
+
+/** The task skills, one per phase, from templates/workspace/skills/. */
+export const TASK_SKILLS = ["task-understand", "task-plan", "task-build", "task-verify", "task-handover", "task-changes"] as const;
+
+/** What the task skills say about running the repository's checks. */
+function checksText(config: ProjectConfig): string {
+  const checks = config.conventions.checks;
+  if (!checks) {
+    return "   Find the repository's test, lint and build commands in `repository/AGENTS.md`, its\n" +
+      "   scripts (like `package.json`) and its CI config. If you can't, ask the developer, and\n" +
+      "   suggest naming them in `dev.yaml` under `conventions.checks`.";
+  }
+  return ["   From `dev.yaml`'s `conventions.checks`, run in `worktrees/<id>/`:", "", ...Object.entries(checks).map(([name, command]) => `   - ${name}: \`${command}\``)].join("\n");
 }
 
 function skillFile(name: string, description: string, body: string): string {
@@ -79,6 +94,12 @@ export function generatedFiles(config: ProjectConfig, registry: Registry, comman
       commands: commands.map((row) => `| ${cell(row.does)} | \`${row.command}\` |`).join("\n"),
     }),
   });
+
+  const formats = Object.fromEntries(LOGS.map((format) => [`format:${format.file.replace(/\.md$/, "")}`, describeFormat(format)]));
+  for (const name of TASK_SKILLS) {
+    const text = template(`skills/${name}.md`);
+    skills.push({ name, description: text.match(/^description: (.*)$/m)?.[1] ?? "", content: fill(text, { ...formats, checks: checksText(config) }) });
+  }
 
   for (const { service } of services) {
     for (const skill of service.agentFiles?.skills ?? []) {
@@ -103,7 +124,7 @@ export function generatedFiles(config: ProjectConfig, registry: Registry, comman
       folders: connected
         .map(({ service }) => `| \`${service.id}/\` | ${cell(service.title)}: ${cell(service.description)}. Start at its \`index.md\` |`)
         .join("\n"),
-      rules: rules.length > 0 ? rules.map((rule, i) => `${i + 7}. ${rule}`).join("\n") + "\n" : "",
+      rules: rules.length > 0 ? rules.map((rule, i) => `${i + 8}. ${rule}`).join("\n") + "\n" : "",
       commands: commands.map((row) => `| \`${row.command}\` | ${cell(row.does)} |`).join("\n"),
       skills: skills.map((skill) => `| \`.github/skills/${skill.name}/SKILL.md\` | ${cell(skill.description)} |`).join("\n"),
     }),

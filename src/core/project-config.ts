@@ -36,6 +36,8 @@ export interface ProjectConfig {
     base?: string;
     /** Files only in the clone, like apps/web/.env.local, copied into each new worktree if git ignores them. */
     worktreeFiles?: string[];
+    /** The repository's checks by name, like test: npm test. Absent means the skills find them in the repository. */
+    checks?: Record<string, string>;
   };
 }
 
@@ -156,6 +158,14 @@ export function parseConfig(text: string): { config: ProjectConfig; problems: Pr
         problems.push({ message: '"conventions.worktreeFiles" should be a list of paths inside the repository, like apps/web/.env.local.' });
       } else {
         config.conventions.worktreeFiles = files as string[];
+      }
+    }
+    const checks = isObject(data.conventions) ? data.conventions.checks : undefined;
+    if (checks !== undefined) {
+      if (!isObject(checks) || Object.keys(checks).length === 0 || !Object.values(checks).every((c) => typeof c === "string" && c.trim())) {
+        problems.push({ message: '"conventions.checks" should name each check and its command, like test: npm test.' });
+      } else {
+        config.conventions.checks = checks as Record<string, string>;
       }
     }
   }
