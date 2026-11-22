@@ -354,7 +354,8 @@ test("a task's worktree carries the skills, and dev files keeps dev's copies cur
 test("dev's copies in one worktree never make a file in another worktree dev's", () => {
   const root = workspace();
   for (const id of ["ABC-123", "ABC-124"]) assert.equal(dev(root, ["task", "start", id]).code, 0);
-  const [mine, theirs] = ["ABC-123", "ABC-124"].map((id) => path.join(root, "worktrees", id));
+  const mine = path.join(root, "worktrees", "ABC-123");
+  const theirs = path.join(root, "worktrees", "ABC-124");
   const verify = ".claude/skills/task-verify/SKILL.md";
   const notes = ".claude/skills/example-notes/SKILL.md";
 
