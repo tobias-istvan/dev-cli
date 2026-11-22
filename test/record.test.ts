@@ -1,7 +1,7 @@
 /** The task record: entry formats, the parser, and what `dev task status` and `dev doctor` make of a record. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -349,6 +349,39 @@ test("a task's worktree carries the skills, and dev files keeps dev's copies cur
   assert.match(readFileSync(path.join(worktree, ".claude", "skills", "task-verify", "SKILL.md"), "utf8"), /- test: `npm test`/);
   assert.equal(readFileSync(path.join(worktree, "notes.md"), "utf8"), "mine\n");
   assert.doesNotMatch(dev(root, ["files"]).out, /Updated the agent files/, "nothing to update the second time");
+});
+
+test("dev's copies in one worktree never make a file in another worktree dev's", () => {
+  const root = workspace();
+  for (const id of ["ABC-123", "ABC-124"]) assert.equal(dev(root, ["task", "start", id]).code, 0);
+  const [mine, theirs] = ["ABC-123", "ABC-124"].map((id) => path.join(root, "worktrees", id));
+  const verify = ".claude/skills/task-verify/SKILL.md";
+  const notes = ".claude/skills/example-notes/SKILL.md";
+
+  // In the second worktree: the branch commits a copy as it is, and two are edited by hand.
+  git(theirs, "add", "--force", verify);
+  git(theirs, "-c", "user.email=t@example.test", "-c", "user.name=T", "commit", "--quiet", "-m", "Track the skill");
+  writeFileSync(path.join(theirs, ".agents/skills/task-verify/SKILL.md"), "edited by hand\n");
+  writeFileSync(path.join(theirs, notes), "edited by hand\n");
+  const tracked = readFileSync(path.join(theirs, verify), "utf8");
+
+  writeFileSync(path.join(root, "dev.yaml"), `${readFileSync(path.join(root, "dev.yaml"), "utf8")}conventions:\n  checks:\n    test: npm test\n`);
+  const files = dev(root, ["files"]);
+  assert.equal(files.code, 0, files.err);
+  assert.match(readFileSync(path.join(mine, verify), "utf8"), /- test: `npm test`/);
+  assert.equal(readFileSync(path.join(theirs, verify), "utf8"), tracked, "a file the branch tracks is never written");
+  assert.equal(readFileSync(path.join(theirs, ".agents/skills/task-verify/SKILL.md"), "utf8"), "edited by hand\n");
+  assert.equal(git(theirs, "status", "--porcelain"), "");
+
+  // A disconnected service's skill leaves the worktrees, unless someone edited the copy.
+  assert.ok(existsSync(path.join(mine, notes)));
+  const removed = dev(root, ["remove", "notes"]);
+  assert.equal(removed.code, 0, removed.err);
+  assert.ok(!existsSync(path.join(root, notes)));
+  assert.ok(!existsSync(path.join(mine, path.dirname(notes))), "the copy and its folder are gone");
+  assert.ok(existsSync(path.join(mine, ".mcp.json")) === existsSync(path.join(root, ".mcp.json")), "and its MCP server");
+  if (existsSync(path.join(mine, ".mcp.json"))) assert.ok(!readFileSync(path.join(mine, ".mcp.json"), "utf8").includes("example-mcp"));
+  assert.equal(readFileSync(path.join(theirs, notes), "utf8"), "edited by hand\n");
 });
 
 test("task diff shows everything since the branch left its base, from the remote's copy of it", () => {

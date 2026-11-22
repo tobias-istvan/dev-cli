@@ -21,7 +21,14 @@ export async function runFiles(program: Command, registry: Registry, out: Output
   for (const [label, files] of report) {
     if (files.length > 0) out.info(`${label}:\n${files.map((f) => `  ${f}`).join("\n")}`);
   }
-  // Worktrees carry copies of the skills, hooks and MCP config: bring dev's copies up to date.
+  await refreshWorktrees(root, out);
+
+  const changed = result.created.length + result.updated.length + result.removed.length;
+  out.info(changed === 0 ? "Done: everything was already up to date." : `Done: ${changed} file${changed === 1 ? "" : "s"} changed.`);
+}
+
+/** Worktrees carry copies of the skills, hooks and MCP config: bring dev's copies up to date. */
+export async function refreshWorktrees(root: string, out: Output): Promise<void> {
   const refreshed: string[] = [];
   for (const id of await worktreeIds(root)) {
     try {
@@ -31,7 +38,4 @@ export async function runFiles(program: Command, registry: Registry, out: Output
     }
   }
   if (refreshed.length > 0) out.info(`Updated the agent files in ${refreshed.map((id) => `worktrees/${id}`).join(", ")}.`);
-
-  const changed = result.created.length + result.updated.length + result.removed.length;
-  out.info(changed === 0 ? "Done: everything was already up to date." : `Done: ${changed} file${changed === 1 ? "" : "s"} changed.`);
 }

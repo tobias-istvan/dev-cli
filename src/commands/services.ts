@@ -9,6 +9,7 @@ import { DevError, formatProblems } from "../core/output.ts";
 import { loadConfig, saveConfig } from "../core/project-config.ts";
 import { scaffold } from "../core/scaffold.ts";
 import { requireWorkspaceRoot } from "../core/workspace.ts";
+import { refreshWorktrees } from "./files.ts";
 import { ensureLogin } from "./login.ts";
 import { workspaceCommands } from "./shared.ts";
 
@@ -41,12 +42,13 @@ async function scopeFor(root: string, entry: ServiceEntry, registry: Registry, o
   return scope;
 }
 
-function refreshFiles(program: Command, root: string, registry: Registry, out: Output): void {
+async function refreshFiles(program: Command, root: string, registry: Registry, out: Output): Promise<void> {
   const config = loadConfig(root);
   const result = scaffold(root, config, registry, workspaceCommands(program, registry, config));
   const changed = result.created.length + result.updated.length + result.removed.length;
   if (changed > 0) out.info(`Updated ${changed} agent file${changed === 1 ? "" : "s"}.`);
   if (result.differs.length > 0) out.info(`Edited by hand, so not updated: ${result.differs.join(", ")}.`);
+  await refreshWorktrees(root, out);
 }
 
 export async function runAdd(program: Command, registry: Registry, out: Output, name: string, options: { scope?: string }): Promise<void> {
@@ -61,7 +63,7 @@ export async function runAdd(program: Command, registry: Registry, out: Output, 
   const scope = await scopeFor(root, entry, registry, out, options.scope);
   config.services.push({ service: entry.key, scope });
   saveConfig(root, config);
-  refreshFiles(program, root, registry, out);
+  await refreshFiles(program, root, registry, out);
   out.info(`Done: added ${entry.service.title} (${entry.service.scope.describe(scope)}). Next: dev sync ${entry.service.id}`);
 }
 
@@ -73,7 +75,7 @@ export async function runRemove(program: Command, registry: Registry, out: Outpu
 
   config.services = config.services.filter((s) => s.service !== entry.key);
   saveConfig(root, config);
-  refreshFiles(program, root, registry, out);
+  await refreshFiles(program, root, registry, out);
 
   const folder = path.join(root, entry.service.id);
   if (options.deleteFiles && existsSync(folder)) {
@@ -126,6 +128,6 @@ export async function runScope(
   }
   current.scope = await scopeFor(root, entry, registry, out, options.set);
   saveConfig(root, config);
-  refreshFiles(program, root, registry, out);
+  await refreshFiles(program, root, registry, out);
   out.info(`Done: ${entry.service.title} now syncs ${entry.service.scope.describe(current.scope)}. Next: dev sync ${entry.service.id}`);
 }

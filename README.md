@@ -823,8 +823,10 @@ In **Copilot CLI** and **Claude Code**, hooks run on their own:
 The hooks are guarded: on a machine without dev, they do nothing. Other tools can run
 `dev day start` and `dev day end` by hand and lose nothing but the automatic context.
 Worktrees get copies of the skills, hooks and MCP config, so agents opened there have them
-too. Git ignores the copies, and `dev files` brings them up to date; edit the workspace's
-own files, not the copies.
+too. Git ignores the copies. `dev files`, `dev add` and `dev remove` bring them up to date,
+and remove a copy whose source is gone, like a removed service's skill. They only touch
+copies still as dev wrote them, never a file the branch tracks; edit the workspace's own
+files, not the copies.
 
 `dev day end` also catches up on sessions that were killed before their end hook ran.
 VS Code sessions aren't saved as transcripts yet.

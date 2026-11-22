@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { constants, existsSync } from "node:fs";
-import { appendFile, copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import { safePath } from "./files.ts";
 import path from "node:path";
 import { git, gitMaybe } from "./git.ts";
@@ -136,34 +137,81 @@ async function exclude(worktree: string, files: string[]): Promise<void> {
   await appendFile(file, `${missing.map((f) => `/${f}`).join("\n")}\n`);
 }
 
+const hash = (content: string): string => createHash("sha256").update(content).digest("hex");
+
 /**
- * Never touches a file the code repository tracks, or one that's there and isn't dev's.
- * With refresh, dev's own copies (the ones git ignores through dev's exclude lines) are
- * brought up to date with the workspace's: they're mirrors, edited at the workspace root.
- * Returns the files written.
+ * What dev wrote into this worktree, each file with its content's hash. Kept in the
+ * worktree's own git folder: info/exclude is shared by every worktree of the clone, so
+ * it can't say which worktree's files are dev's.
+ */
+async function manifestFile(worktree: string): Promise<string | null> {
+  const dir = await gitMaybe(worktree, ["rev-parse", "--git-dir"]);
+  return dir ? path.join(path.resolve(worktree, dir), "dev-agent-files.json") : null;
+}
+
+async function readManifest(file: string | null): Promise<Record<string, string>> {
+  if (!file) return {};
+  try {
+    return JSON.parse(await readFile(file, "utf8")) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Never touches a file the code repository tracks, or one that isn't dev's: a file is dev's
+ * while it's in this worktree's manifest and still as dev wrote it. With refresh, dev's
+ * copies are brought up to date with the workspace's, and the ones whose source is gone are
+ * removed: they're mirrors, edited at the workspace root. Returns the files changed.
  */
 export async function addAgentFiles(root: string, worktree: string, options: { refresh?: boolean } = {}): Promise<string[]> {
-  const ours = options.refresh && existsSync(await excludeFile(worktree)) ? (await readFile(await excludeFile(worktree), "utf8")).split("\n") : [];
+  const sources: Array<[string, string]> = [[INSTRUCTIONS_FILE, INSTRUCTIONS]];
+  for (const file of [...COPIED, ...(await skillFiles(root))]) {
+    const source = safePath(root, file);
+    if (existsSync(source)) sources.push([file, await readFile(source, "utf8")]);
+  }
+  const targets = new Map(sources.map(([file]) => [file, safePath(worktree, file)]));
+  const manifest = await manifestFile(worktree);
+  const recorded = await readManifest(manifest);
+  const next: Record<string, string> = {};
+  const isOurs = async (file: string, target: string): Promise<boolean> =>
+    recorded[file] !== undefined && !(await isTracked(worktree, file)) && hash(await readFile(target, "utf8")) === recorded[file];
+
   const written: string[] = [];
-  const add = async (file: string, content: string): Promise<void> => {
-    const target = safePath(worktree, file);
+  for (const [file, content] of sources) {
+    const target = targets.get(file)!;
     if (existsSync(target)) {
-      if (!ours.includes(`/${file}`) || (await readFile(target, "utf8")) === content) return;
+      if (!(await isOurs(file, target))) continue;
+      next[file] = recorded[file]!;
+      if (!options.refresh || (await readFile(target, "utf8")) === content) continue;
     } else if (await isTracked(worktree, file)) {
-      return;
+      continue;
     }
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content);
+    next[file] = hash(content);
     written.push(file);
-  };
-
-  await add(INSTRUCTIONS_FILE, INSTRUCTIONS);
-  for (const file of [...COPIED, ...(await skillFiles(root))]) {
-    const source = safePath(root, file);
-    if (existsSync(source)) await add(file, await readFile(source, "utf8"));
   }
+
+  // Copies whose source is gone from the workspace, like a disconnected service's skill.
+  const removed: string[] = [];
+  for (const file of Object.keys(recorded)) {
+    if (targets.has(file)) continue;
+    const target = safePath(worktree, file);
+    if (!existsSync(target)) continue;
+    if (!options.refresh || !(await isOurs(file, target))) {
+      if (!options.refresh) next[file] = recorded[file]!;
+      continue;
+    }
+    await rm(target);
+    removed.push(file);
+    // A skill's folder goes with its last file.
+    await rmdir(path.dirname(target)).catch(() => undefined);
+  }
+
   await exclude(worktree, written);
-  return written;
+  if (manifest && JSON.stringify(next) !== JSON.stringify(recorded)) await writeFile(manifest, `${JSON.stringify(next, null, 2)}\n`);
+  return [...written, ...removed];
 }
 
 export type CopyResult = "copied" | "already there" | "not in the clone" | "not ignored by git";
