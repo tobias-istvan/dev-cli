@@ -30,6 +30,8 @@ import {
 } from "../core/worktree.ts";
 import { requireWorkspaceRoot } from "../core/workspace.ts";
 import { describeRecord, readRecord, recordNotes } from "../core/task-record.ts";
+import { findTaskPr, readBrief, setBriefFields, startNextRound } from "../core/rounds.ts";
+import { today } from "../core/day.ts";
 
 export interface StartOptions {
   title?: string;
@@ -114,7 +116,15 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   const type = options.type ?? resolved?.context.type ?? "feature";
 
   const pattern = config.conventions.branch ?? DEFAULT_BRANCH_PATTERN;
-  const worktree = await step(out, `Creating worktrees/${id}`, () => ensureWorktree(root, id, branchName(pattern, { type, id, slug: slugify(title) }), options.base ?? config.conventions.base));
+  const round = await nextRound(root, config, registry, out, id);
+  // A task resumed keeps the branch its brief records: from round 2 it has a suffix.
+  let branch = (await readBrief(root, id))?.branch ?? branchName(pattern, { type, id, slug: slugify(title) });
+  if (round) {
+    branch = `${branchName(pattern, { type, id, slug: slugify(title) })}-${round.number}`;
+    const started = await startNextRound(root, id, { branch, reason: round.reason });
+    out.info(`Round ${started.round}: ${round.reason}.${started.moved.length > 0 ? ` Moved ${started.moved.join(", ")} to tasks/${id}/history/${started.round - 1}/.` : ""}`);
+  }
+  const worktree = await step(out, `Creating worktrees/${id}`, () => ensureWorktree(root, id, branch, options.base ?? config.conventions.base));
   const copies = await copyLocalFiles(repo, worktree.path, config.conventions.worktreeFiles ?? []);
 
   const template = [".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md", "PULL_REQUEST_TEMPLATE.md"].find((f) => existsSync(path.join(repo, f))) ?? null;
@@ -127,12 +137,38 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
     if (copy.result === "not ignored by git") out.warn(`Didn't copy ${copy.file}: git doesn't ignore it, so it could be committed by accident.`);
   }
   out.info(notes.length > 0 ? `Notes: wrote ${notes.join(", ")}` : `Notes: tasks/${id}/ already there and left as it was`);
-  out.info(`\nDone: next, run the task-understand skill for ${id} to fill in tasks/${id}/brief.md. Nothing was pushed.`);
+  out.info(
+    round
+      ? `\nDone: next, run the task-changes skill for ${id} to see what reopened it, then task-plan to update the plan. Nothing was pushed.`
+      : `\nDone: next, run the task-understand skill for ${id} to fill in tasks/${id}/brief.md. Nothing was pushed.`,
+  );
 }
 
-export async function runTaskStatus(out: Output, id: string | undefined, options: { json?: boolean } = {}): Promise<void> {
+/**
+ * Whether starting a task begins its next round: its brief says it's finished, because its PR
+ * merged or its worktree was cleaned up, or the versioning service now says its PR merged.
+ * Never while the last round's worktree is there, so no unfinished work is touched.
+ */
+async function nextRound(root: string, config: ProjectConfig, registry: Registry, out: Output, id: string): Promise<{ number: number; reason: string } | null> {
+  let brief = await readBrief(root, id);
+  if (!brief) return null;
+  if (!brief.finished) {
+    await findTaskPr(root, config, registry, out, id).catch(() => null);
+    brief = await readBrief(root, id);
+    if (!brief?.finished) return null;
+  }
+  const record = await readRecord(root, id);
+  const why = record.reopened.length > 0 ? `its ticket was reopened (${record.reopened.join(", ")})` : brief.pr ? `started again after PR #${brief.pr} merged` : "started again after it finished";
+  if (existsSync(worktreeDir(root, id))) {
+    throw new DevError(`${id} is finished, so starting it again starts round ${brief.round + 1}, but worktrees/${id} is still there.`, `Remove it with "dev task cleanup --remove", then run "dev task start ${id}" again.`);
+  }
+  return { number: brief.round + 1, reason: why };
+}
+
+export async function runTaskStatus(registry: Registry, out: Output, id: string | undefined, options: { json?: boolean } = {}): Promise<void> {
   const root = requireWorkspaceRoot();
-  const baseFor = basesFor(root, await workspaceBase(requireClone(root), loadConfig(root)));
+  const config = loadConfig(root);
+  const baseFor = basesFor(root, await workspaceBase(requireClone(root), config));
 
   if (id) {
     const hasWorktree = existsSync(worktreeDir(root, id));
@@ -140,6 +176,10 @@ export async function runTaskStatus(out: Output, id: string | undefined, options
       throw new DevError(`There's no worktree for ${id}, and no tasks/${id}/.`, `Start it with "dev task start ${id}".`);
     }
     const state = hasWorktree ? await inspectWorktree(root, id, await baseFor(id)) : null;
+    // The PR, until it's known to be merged. Best effort: status works offline.
+    if ((await readBrief(root, id))?.finished === null) {
+      await findTaskPr(root, config, registry, out, id).catch((error: Error) => out.warn(`Couldn't look up ${id}'s pull request: ${error.message}`));
+    }
     const record = await readRecord(root, id);
     if (options.json) {
       console.log(JSON.stringify({ id, worktree: state, record }, null, 2));
@@ -281,6 +321,10 @@ export async function runTaskCleanup(registry: Registry, out: Output, options: {
   for (const state of safe) {
     try {
       const note = await removeWorktree(root, state, { fetched, merged: merged.get(state.id) });
+      // The task is finished: its watch window starts when its PR merged, or today if that isn't known.
+      const change = merged.get(state.id);
+      if (change?.state === "merged") await setBriefFields(root, state.id, { pr: change.number, finished: change.mergedAt?.slice(0, 10) ?? today() });
+      else if ((await readBrief(root, state.id))?.finished === null) await setBriefFields(root, state.id, { finished: today() });
       out.info(`Removed worktrees/${state.id}. Its notes in tasks/${state.id}/ stay.`);
       if (note) out.warn(`  ${note}`);
     } catch (error) {

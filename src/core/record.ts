@@ -135,6 +135,7 @@ export const CHANGES: LogFormat = {
     { name: "Changed", meaning: "What changed" },
     { name: "Report", meaning: "The sync's change report" },
     { name: "Recorded", meaning: "When the sync recorded it" },
+    { name: "Reopened", meaning: "Whether the task's own ticket went from done back to open: `dev task start` then starts the next round", values: ["yes"] },
     { name: "Led to", meaning: "The findings or decisions it led to, by id, or nothing", requiredWhen: "reviewed", refers: true },
   ],
   example: {

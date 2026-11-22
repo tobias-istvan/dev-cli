@@ -327,7 +327,7 @@ are context, not your work, unless they're also marked mine.`),
     .option("--json", "Print JSON, for tools")
     .action(async (id: string | undefined, options: { json?: boolean }) => {
       const { runTaskStatus } = await import("./commands/task.ts");
-      await runTaskStatus(out, id, options);
+      await runTaskStatus(registry, out, id, options);
     });
 
   task

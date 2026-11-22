@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { compareItem, readItem } from "../src/core/changes.ts";
-import { CHANGES, nextNumber, renderEntry } from "../src/core/record.ts";
+import { CHANGES, field, logHeader, nextNumber, parseLog, renderEntry, VERIFICATION } from "../src/core/record.ts";
+import { splitFrontMatter } from "../src/core/front-matter.ts";
 
 const CLI = path.join(import.meta.dirname, "..", "src", "cli.ts");
 const PLUGINS = [path.join(import.meta.dirname, "fixtures", "example-plugin.ts"), path.join(import.meta.dirname, "fixtures", "recorded-plugin.ts")].join(":");
@@ -218,4 +219,113 @@ test("log entries share one shape, and ids are never reused", () => {
     renderEntry(CHANGES, { number: 2, kind: "atlassian:jira", status: "new", fields: [["Item", "jira/A-1/ticket.md"], ["Changed", "status: A → B"]], text: "A-1 · Title" }),
     "## C2 · atlassian:jira · new\n\n- Item: jira/A-1/ticket.md\n- Changed: status: A → B\n\nA-1 · Title",
   );
+});
+
+const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+const brief = (root: string, id: string) => splitFrontMatter(read(root, `tasks/${id}/brief.md`)).data!;
+const prs = (branch: string, ...list: Array<{ number: number; state: string; mergedAt?: string }>) => ({
+  DEV_EXAMPLE_PRS: JSON.stringify({ [branch]: list.map((pr) => ({ url: `https://example.test/pr/${pr.number}`, draft: false, base: "main", headSha: "0", mergedAt: null, ...pr })) }),
+});
+
+test("a task reopened after its PR merged starts its next round, keeping its logs", () => {
+  const { root, remote } = setup();
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.equal(dev(root, remote, ["task", "start", "TCK-1"]).code, 0);
+  const branch = String(brief(root, "TCK-1").branch);
+
+  // dev finds the PR, then sees it merged.
+  const open = dev(root, remote, ["task", "status", "TCK-1"], prs(branch, { number: 42, state: "open" }));
+  assert.equal(open.code, 0, open.err);
+  assert.match(open.out, /^Round 1 · PR #42$/m);
+  assert.equal(brief(root, "TCK-1").finished, undefined);
+  const merged = `${daysAgo(2)}T10:00:00Z`;
+  assert.match(dev(root, remote, ["task", "status", "TCK-1"], prs(branch, { number: 42, state: "merged", mergedAt: merged })).out, new RegExp(`^Round 1 · PR #42, merged ${daysAgo(2)}$`, "m"));
+  assert.equal(brief(root, "TCK-1").finished, daysAgo(2));
+
+  // Starting it again while the worktree is there touches nothing.
+  const early = dev(root, remote, ["task", "start", "TCK-1"]);
+  assert.notEqual(early.code, 0);
+  assert.match(early.err, /TCK-1 is finished, so starting it again starts round 2, but worktrees\/TCK-1 is still there\.[\s\S]*dev task cleanup --remove/);
+  assert.equal(dev(root, remote, ["task", "cleanup", "--remove"]).code, 0);
+
+  // The ticket is done, then reopened: the sync says so in the task's changes.
+  ticket(remote, { id: "TCK-1", title: "Sort the order list", updated: "2026-11-03T10:00:00Z", status: "Done", parent: "TCK-100" }, T1("- Sorted by date", ["**sam**: Looks right."]));
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.doesNotMatch(read(root, "tasks/TCK-1/changes.md"), /Reopened/);
+  ticket(remote, { id: "TCK-1", title: "Sort the order list", updated: "2026-11-04T10:00:00Z", status: "In Progress", parent: "TCK-100" }, T1("- Sorted by date", ["**sam**: Looks right.", "**kim**: Still sorted by name."]));
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  const changes = parseLog(CHANGES, read(root, "tasks/TCK-1/changes.md")).entries;
+  const reopen = changes.at(-1)!;
+  assert.equal(field(reopen, "Reopened"), "yes");
+  assert.match(field(reopen, "Changed")!, /reopened: no longer done/);
+  const status = dev(root, remote, ["task", "status", "TCK-1"]);
+  assert.match(status.out, new RegExp(`^Reopened \\(${reopen.id}\\): "dev task start TCK-1" starts round 2$`, "m"));
+  const snapshot = dev(root, remote, ["day", "start"]);
+  assert.equal(snapshot.code, 0, snapshot.err);
+  assert.match(read(root, "snapshot.md"), new RegExp(`Reopened after their PR merged: \\[TCK-1\\]\\(tasks/TCK-1/changes\\.md\\) \\(${reopen.id}\\): \`dev task start TCK-1\` starts round 2\\.`));
+
+  const hook = spawnSync(process.execPath, [CLI, "hook", "session-start", "--tool", "claude"], {
+    cwd: root,
+    encoding: "utf8",
+    input: JSON.stringify({ session_id: "s-1", cwd: root }),
+    env: { ...process.env, XDG_CONFIG_HOME: path.join(base, "config"), DEV_EXTRA_PLUGINS: PLUGINS, DEV_RECORDED_REMOTE: remote, CLAUDE_PROJECT_DIR: root },
+  });
+  assert.match(JSON.parse(hook.stdout).hookSpecificOutput.additionalContext, new RegExp(`Reopened after their PR merged: TCK-1 \\(${reopen.id}\\): \`dev task start TCK-1\` starts round 2\\.`));
+
+  // The round's PR files, as the skills would have left them.
+  const task = path.join(root, "tasks", "TCK-1");
+  writeFileSync(path.join(task, "pr-description.md"), "Sorts the list.\n");
+  writeFileSync(path.join(task, "verification.md"), `${logHeader(VERIFICATION)}\n${renderEntry(VERIFICATION, { number: 1, kind: "sorted by date", status: "passed", fields: [["How", "unit test"], ["By", "a test"], ["Expected", "dates in order"], ["Evidence", "[test.log](evidence/test.log)"]], text: "Covers the list page." })}\n`);
+  mkdirSync(path.join(task, "evidence"));
+  writeFileSync(path.join(task, "evidence", "test.log"), "ok\n");
+
+  const second = dev(root, remote, ["task", "start", "TCK-1"]);
+  assert.equal(second.code, 0, second.err);
+  assert.match(second.out, new RegExp(`Round 2: its ticket was reopened \\(${reopen.id}\\)\\. Moved pr-description\\.md, verification\\.md, evidence to tasks/TCK-1/history/1/\\.`));
+  assert.match(second.out, /run the task-changes skill for TCK-1/);
+  assert.equal(git(path.join(root, "worktrees", "TCK-1"), "rev-parse", "--abbrev-ref", "HEAD"), `${branch}-2`);
+  const next = brief(root, "TCK-1");
+  assert.equal(next.round, 2);
+  assert.equal(next.branch, `${branch}-2`);
+  assert.equal(next.pr, undefined);
+  assert.equal(next.finished, undefined);
+  assert.equal(read(root, "tasks/TCK-1/history/1/pr-description.md"), "Sorts the list.\n");
+  assert.ok(existsSync(path.join(task, "history", "1", "evidence", "test.log")));
+  assert.match(read(root, "tasks/TCK-1/history/1/README.md"), new RegExp(`# Round 1\n\n- PR: #42\n- Merged: ${daysAgo(2)}\n- Branch: \`${branch}\``));
+  const [replanned] = parseLog(VERIFICATION, read(root, "tasks/TCK-1/verification.md")).entries;
+  assert.equal(replanned!.status, "planned");
+  assert.deepEqual(replanned!.fields, [["How", "unit test"], ["By", "a test"], ["Expected", "dates in order"]]);
+  assert.ok(!existsSync(path.join(task, "pr-description.md")));
+  assert.equal(parseLog(CHANGES, read(root, "tasks/TCK-1/changes.md")).entries.length, changes.length, "the logs carry on");
+  assert.match(read(root, "tasks/TCK-1/progress.md"), new RegExp(`\nRound 2 started [\\d-]+: its ticket was reopened \\(${reopen.id}\\)\\. Round 1's PR files are in history/1/\\.\n`));
+});
+
+test("a finished task watches its sources for conventions.watchDays after it finished", () => {
+  const { root, remote } = setup();
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.equal(dev(root, remote, ["task", "start", "TCK-1"]).code, 0);
+
+  // No PR found: the task finished when its worktree was cleaned up.
+  assert.equal(dev(root, remote, ["task", "cleanup", "--remove"]).code, 0);
+  assert.equal(brief(root, "TCK-1").finished, today);
+  ticket(remote, { id: "TCK-1", title: "Sort the order list", updated: "2026-11-02T10:00:00Z", status: "In Review", parent: "TCK-100" }, T1("- Sorted by date", ["**sam**: Looks right."]));
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.match(read(root, "tasks/TCK-1/changes.md"), /## C1 · recorded:tickets · new/);
+
+  // 40 days on, past the default 30: the day's report still lists it, the task doesn't.
+  const file = path.join(root, "tasks", "TCK-1", "brief.md");
+  writeFileSync(file, read(root, "tasks/TCK-1/brief.md").replace(`finished: "${today}"`, `finished: "${daysAgo(40)}"`));
+  ticket(remote, { id: "TCK-1", title: "Sort the order list", updated: "2026-11-03T10:00:00Z", status: "Done", parent: "TCK-100" }, T1("- Sorted by date", ["**sam**: Looks right."]));
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.doesNotMatch(read(root, "tasks/TCK-1/changes.md"), /## C2/);
+  assert.match(read(root, `work-sessions/${today}/changes.md`), /status: In Review → Done\n(?! {2}- Affects)/);
+
+  // A longer window keeps it watching.
+  writeFileSync(path.join(root, "dev.yaml"), `${read(root, "dev.yaml")}conventions:\n  watchDays: 60\n`);
+  ticket(remote, { id: "TCK-1", title: "Sort the order list", updated: "2026-11-04T10:00:00Z", status: "In Progress", parent: "TCK-100" }, T1("- Sorted by date", ["**sam**: Looks right."]));
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.match(read(root, "tasks/TCK-1/changes.md"), /## C2 · recorded:tickets · new[\s\S]*- Reopened: yes/);
+
+  writeFileSync(path.join(root, "dev.yaml"), read(root, "dev.yaml").replace("watchDays: 60", "watchDays: soon"));
+  assert.match(dev(root, remote, ["doctor", "--offline"]).out, /"conventions\.watchDays" should be a number of days/);
 });

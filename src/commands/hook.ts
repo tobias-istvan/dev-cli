@@ -10,7 +10,7 @@ import { latestHandoff, today } from "../core/day.ts";
 import { parseConfig, configPath } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
 import { parseHookInput, readStdin, recordSession, saveSession } from "../core/sessions/index.ts";
-import { readRecord } from "../core/task-record.ts";
+import { readRecord, recordIds } from "../core/task-record.ts";
 import { worktreeIds } from "../core/worktree.ts";
 import { describeRefresh, refreshState } from "../core/refresh.ts";
 import { findWorkspaceRoot } from "../core/workspace.ts";
@@ -84,6 +84,14 @@ export async function runSessionStart(registry: Registry, toolOption: string): P
       }
     }
   }
+
+  // A reopened ticket needs action whether or not its task is in flight.
+  const reopened: string[] = [];
+  for (const id of await recordIds(root)) {
+    const record = await readRecord(root, id).catch(() => null);
+    if (record && record.reopened.length > 0) reopened.push(`${id} (${record.reopened.join(", ")}): \`dev task start ${id}\` starts round ${record.round + 1}`);
+  }
+  if (reopened.length > 0) lines.push("", `Reopened after their PR merged: ${reopened.join("; ")}.`);
 
   const { config, problems } = parseConfig(await readFile(configPath(root), "utf8"));
   if (problems.length === 0) {

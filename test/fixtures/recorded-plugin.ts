@@ -67,6 +67,16 @@ const plugin: Plugin = {
         if (process.env.DEV_RECORDED_CRASH) process.exit(9);
         return { added: 0, updated: live.size, removed: 0, failed: [] };
       },
+      // A ticket whose status is Done is done, so a reopen can be seen.
+      tasks: {
+        async list(context) {
+          const folder = context.folder!;
+          return (existsSync(folder) ? readdirSync(folder) : []).filter((id) => existsSync(ticketFile(context, id))).map((id) => {
+            const status = readFileSync(ticketFile(context, id), "utf8").match(/^status: (.*)$/m)?.[1] ?? "";
+            return { id, title: id, status, done: status === "Done", mine: true, inScope: true, via: "scope", file: path.relative(context.root, ticketFile(context, id)) };
+          });
+        },
+      },
       links: {
         find: (text) => [...text.matchAll(/\bTCK-\d+\b/g)].map((m) => ({ service: "recorded:tickets", id: m[0] })),
         async fetch(context, reference) {

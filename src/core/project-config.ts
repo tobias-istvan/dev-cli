@@ -38,6 +38,8 @@ export interface ProjectConfig {
     worktreeFiles?: string[];
     /** The repository's checks by name, like test: npm test. Absent means the skills find them in the repository. */
     checks?: Record<string, string>;
+    /** Days after a task's PR merged that dev sync keeps adding its sources' changes to it. Absent means 30. */
+    watchDays?: number;
   };
 }
 
@@ -166,6 +168,14 @@ export function parseConfig(text: string): { config: ProjectConfig; problems: Pr
         problems.push({ message: '"conventions.checks" should name each check and its command, like test: npm test.' });
       } else {
         config.conventions.checks = checks as Record<string, string>;
+      }
+    }
+    const watchDays = isObject(data.conventions) ? data.conventions.watchDays : undefined;
+    if (watchDays !== undefined) {
+      if (!Number.isInteger(watchDays) || (watchDays as number) < 0) {
+        problems.push({ message: '"conventions.watchDays" should be a number of days, like 30.' });
+      } else {
+        config.conventions.watchDays = watchDays as number;
       }
     }
   }

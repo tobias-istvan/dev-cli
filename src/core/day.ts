@@ -142,11 +142,16 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
   // A finished task's sources changing is how a reopen first shows up.
   const worktrees = new Set(await worktreeIds(root));
   const changed: string[] = [];
+  const reopened: string[] = [];
   for (const id of await recordIds(root)) {
-    if (worktrees.has(id)) continue;
-    const fresh = (await readRecord(root, id)).logs.changes.byStatus.new ?? [];
-    if (fresh.length > 0) changed.push(`[${id}](tasks/${id}/changes.md) (${fresh.join(", ")})`);
+    const record = await readRecord(root, id);
+    if (record.reopened.length > 0) reopened.push(`[${id}](tasks/${id}/changes.md) (${record.reopened.join(", ")}): \`dev task start ${id}\` starts round ${record.round + 1}`);
+    else if (!worktrees.has(id)) {
+      const fresh = record.logs.changes.byStatus.new ?? [];
+      if (fresh.length > 0) changed.push(`[${id}](tasks/${id}/changes.md) (${fresh.join(", ")})`);
+    }
   }
+  if (reopened.length > 0) lines.push(`Reopened after their PR merged: ${reopened.join("; ")}.`, "");
   if (changed.length > 0) {
     lines.push(`Finished tasks whose sources changed: ${changed.join(", ")}. A ticket back in an open status may mean it was reopened; \`task-changes\` reviews them.`, "");
   }

@@ -308,6 +308,7 @@ conventions:
 | `conventions.base` | The branch tasks start from and merge into, for teams that merge into `develop` or a release branch. `dev task start --base` overrides it for one task |
 | `conventions.worktreeFiles` | Local-only files, like `.env.local`, copied into each new worktree. Only files git ignores are copied, so they can't be committed by accident |
 | `conventions.checks` | The repository's checks by name, like `test: npm test`. The task skills run them to plan and verify. Without it, they find the commands in the repository's `AGENTS.md`, scripts and CI config |
+| `conventions.watchDays` | Days a finished task keeps getting its sources' changes in its `changes.md`, counted from its `finished` date. Default 30. The day's change report lists every change either way |
 
 Edit it by hand or with `dev add`, `dev remove` and `dev <service> scope`. Comments are kept.
 `dev doctor` checks it.
@@ -637,6 +638,29 @@ dev task start "Try the new layout"      # a task with no ticket
 
 Running it again leaves the worktree, brief and progress note as they are. It never pushes.
 
+### Rounds
+
+One task is one ticket and one folder, with one pull request at a time. dev finds the task's
+pull or merge request and writes it into the brief as `pr:`, and the day it merged as
+`finished:`. It looks in `dev task status <id>`, `dev day start` and `dev task cleanup`. A
+task cleaned up with no merged PR found is finished the day its worktree was removed.
+
+When a finished task's ticket goes from done back to open, the sync marks its entry in
+`changes.md` with `Reopened: yes`, and `dev task status`, the snapshot and the session start
+say so. `dev task start ABC-123` on a finished task then starts its next round:
+
+- `pr-description.md`, `verification.md` and `evidence/` move to `tasks/ABC-123/history/1/`,
+  with a short `README.md` naming the PR, when it merged and the branch.
+- `verification.md` starts again with the same checks, all `planned`, without the last
+  round's evidence, so every criterion is checked again.
+- The findings, decisions, changes and follow-ups carry on. The brief and plan are updated in
+  place.
+- A new branch with a suffix, like `feature/ABC-123-sort-the-order-list-2`, in
+  `worktrees/ABC-123`. The brief's `round` goes up and its `pr` and `finished` are cleared.
+
+It won't start a round while the last one's worktree is still there: run
+`dev task cleanup --remove` first.
+
 ### Checking in and cleaning up
 
 ```sh
@@ -773,8 +797,10 @@ Rewritten by every `dev day start`:
 - **Tasks in flight**: each worktree's commits and uncommitted changes, how far the base has
   moved on, and what its record says needs attention: blocking findings, source changes to
   review, failed checks.
+- **Reopened tasks**: finished tasks whose ticket went from done back to open, with the
+  command that starts their next round.
 - **Finished tasks whose sources changed**: tasks with a record but no worktree, and new
-  entries in their `changes.md`. A ticket back in an open status may mean it was reopened.
+  entries in their `changes.md`.
 - **A section from each service**: tickets due or overdue, in progress and to do; issues and
   board items; pull requests waiting for review; designs that changed this week.
 
@@ -813,7 +839,7 @@ handle credentials; never commit sync output; for "what are my tasks", run
 In **Copilot CLI** and **Claude Code**, hooks run on their own:
 
 - **At session start**, the agent gets the last Next steps, the tasks in flight and what needs
-  action in each (source changes to review, blocking findings), what's due and what's waiting
+  action in each (source changes to review, blocking findings), reopened tasks, what's due and what's waiting
   for review. If `snapshot.md` is more than four hours old, a `dev day start`
   starts in the background, unless a sync is already running.
 - **Before each shell command and file edit**, the [command check](#the-command-check) runs.
@@ -900,8 +926,8 @@ anything.
 | `dev sync [service]` | Sync every service, or one. `--referenced` |
 | `dev index [service]` | Rebuild indexes from what's on disk |
 | `dev task list` | Tasks from every task source. `--mine`, `--all`, `--refresh`, `--json` |
-| `dev task start <ref>` | Worktree, branch and notes for a task. `--title`, `--type`, `--base` |
-| `dev task status [id]` | What's in flight, or one task and its record. `--json` |
+| `dev task start <ref>` | Worktree, branch and notes for a task; the next round for a finished one. `--title`, `--type`, `--base` |
+| `dev task status [id]` | What's in flight, or one task and its record, looking up its PR. `--json` |
 | `dev task diff <id>` | What a task changed since its branch left the base, uncommitted changes included. `--stat` |
 | `dev task cleanup` | Which worktrees can go. `--remove` |
 | `dev check "<command>"` | What the command check decides |
