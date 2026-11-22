@@ -77,8 +77,8 @@ sources: [] # workspace files that matter but the Sources links don't reach; dev
 
 # ${context.title}
 
-> Written by \`dev task start\`. Fill in the sections from the sources below, then keep
-> this as the thing you load for this task, not the raw sources.
+> Written by \`dev task start\`. Run the \`task-understand\` skill to fill it in from the
+> sources below, then keep this as the thing you load for this task, not the raw sources.
 
 ## Sources
 
@@ -92,15 +92,23 @@ _One paragraph: what changes, for whom, and why._
 
 - [ ] …
 
-## Constraints and decisions
+## Constraints
 
-_Anything that limits the approach, and decisions made along the way._
+_Anything that limits the approach. Choices made along the way go in [decisions.md](decisions.md)._
 
 ## Out of scope
 
-## Open questions
+## Record
 
-_Anything that needs a person's answer. If one blocks the work, stop and ask._
+The rest of this task lives next to this brief. Each log is created when it's first needed,
+in the format its \`task-*\` skill describes; \`dev task status ${context.id}\` sums them up.
+
+- [findings.md](findings.md): gaps, conflicts and questions. If one blocks the work, stop and ask.
+- [decisions.md](decisions.md): choices made, and why
+- [plan.md](plan.md) and [verification.md](verification.md): the approach, and how each criterion is checked
+- [changes.md](changes.md): source changes \`dev sync\` found, to review
+- [follow-ups.md](follow-ups.md): issues found but not fixed here
+- [progress.md](progress.md): what's done, and the next step
 
 ## When done
 

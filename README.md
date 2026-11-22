@@ -145,7 +145,8 @@ dev task start ABC-123
 
 `task start` creates `worktrees/ABC-123` on a new branch, and `tasks/ABC-123/brief.md`
 linking the ticket, its parent and the specs and designs they point to. Open the worktree
-in your editor, or point an agent at the brief.
+in your editor, or ask an agent to run the `task-understand` skill for ABC-123. See
+[Working through a task](#working-through-a-task).
 
 ### 5. Commit the workspace
 
@@ -306,6 +307,7 @@ conventions:
 | `conventions.branch` | Branch names for tasks. `{type}` is `feature`, `fix` or `chore`, from the item |
 | `conventions.base` | The branch tasks start from and merge into, for teams that merge into `develop` or a release branch. `dev task start --base` overrides it for one task |
 | `conventions.worktreeFiles` | Local-only files, like `.env.local`, copied into each new worktree. Only files git ignores are copied, so they can't be committed by accident |
+| `conventions.checks` | The repository's checks by name, like `test: npm test`. The task skills run them to plan and verify. Without it, they find the commands in the repository's `AGENTS.md`, scripts and CI config |
 
 Edit it by hand or with `dev add`, `dev remove` and `dev <service> scope`. Comments are kept.
 `dev doctor` checks it.
@@ -641,6 +643,7 @@ Running it again leaves the worktree, brief and progress note as they are. It ne
 dev task status               # every task in flight: commits, uncommitted changes, how far behind, what needs attention
 dev task status ABC-123       # one task's commits, changed files and record
 dev task status --json        # the same, for tools
+dev task diff ABC-123         # what the task changed since its branch left the base, uncommitted changes included
 dev task cleanup              # which worktrees can go, and why the rest can't
 dev task cleanup --remove     # remove the safe ones
 ```
@@ -700,6 +703,30 @@ that resolves it, or a reference to an id that isn't in the record. For a brief 
 these logs, the questions under its "Open questions" and its ticked criteria stand in until
 `findings.md` and `verification.md` exist.
 
+### Working through a task
+
+A skill for each phase, generated with the others into `.github/skills/`, `.claude/skills/`
+and `.agents/skills/`. Ask an agent to run one for a task, like "run task-plan for
+ABC-123", or let it pick one up:
+
+| Skill | Reads | Writes |
+| --- | --- | --- |
+| `task-understand` | The brief's sources, the code | `brief.md`, `findings.md`, drafted questions |
+| `task-plan` | Brief, findings, decisions, the code | `plan.md`, the verification plan in `verification.md`, `decisions.md` |
+| `task-build` | Plan, progress | The code, `progress.md`, decisions, findings and follow-ups as they come up |
+| `task-verify` | Criteria, verification plan, the diff, sources | Results in `verification.md`, files in `evidence/` |
+| `task-handover` | The whole record | `pr-description.md`, drafts of follow-up issues |
+| `task-changes` | `new` entries in `changes.md` | Findings, decisions, updated brief and plan, entries marked `reviewed` |
+
+Each starts from `dev task status <id>`, describes the entries it writes from the same
+definition dev parses them with, and ends by presenting its result, writing the next step in
+`progress.md`, and stopping: you decide when to move on. `task-verify` runs in a fresh
+context, as a subagent where the tool has them, so the work isn't graded by whoever built it.
+What it can't check is marked `needs-person`, for you. Nothing is posted, pushed or opened
+as a PR unless you ask.
+
+The skills are yours to edit: like every generated file, an edited one is left alone.
+
 ## Reviewing pull and merge requests
 
 ```sh
@@ -743,8 +770,11 @@ dev day end          # save the day's agent sessions, update the day summary
 Rewritten by every `dev day start`:
 
 - **Carried over**: the last day's Next steps and anything still blocked.
-- **Tasks in flight**: each worktree's commits and uncommitted changes, and how far the
-  default branch has moved on.
+- **Tasks in flight**: each worktree's commits and uncommitted changes, how far the base has
+  moved on, and what its record says needs attention: blocking findings, source changes to
+  review, failed checks.
+- **Finished tasks whose sources changed**: tasks with a record but no worktree, and new
+  entries in their `changes.md`. A ticket back in an open status may mean it was reopened.
 - **A section from each service**: tickets due or overdue, in progress and to do; issues and
   board items; pull requests waiting for review; designs that changed this week.
 
@@ -768,22 +798,23 @@ snapshot and the next session start from your Next steps.
 | --- | --- |
 | `AGENTS.md` | The layout, the rules, every command, and each service's rules |
 | `CLAUDE.md`, `.github/copilot-instructions.md` | Pointers to `AGENTS.md`, for tools that don't read it themselves |
-| Skills in `.github/skills/`, `.claude/skills/`, `.agents/skills/` | Short guides: the CLI, PR or MR review, reading Figma designs |
+| Skills in `.github/skills/`, `.claude/skills/`, `.agents/skills/` | Short guides: the CLI, each phase of a task, PR or MR review, reading Figma designs |
 | `docs/jira.md`, `docs/confluence.md` | How each service's files are laid out, and what the Why column means |
 | `.mcp.json`, `.vscode/mcp.json` | The Figma desktop app's local MCP server |
 | `.github/hooks/dev.json`, `.claude/settings.json` | Session hooks for Copilot CLI and Claude Code |
 
 The rules agents get include: read the index first; never edit synced files; never push, open a
 pull request or change anything in a service unless the person asks in the session; never
-handle credentials; never commit sync output; and for "what are my tasks", run
-`dev task list --mine`.
+handle credentials; never commit sync output; for "what are my tasks", run
+`dev task list --mine`; and work on a task through its record, ending each phase by stopping.
 
 ### Session hooks
 
 In **Copilot CLI** and **Claude Code**, hooks run on their own:
 
-- **At session start**, the agent gets the last Next steps, the tasks in flight, what's due and
-  what's waiting for review. If `snapshot.md` is more than four hours old, a `dev day start`
+- **At session start**, the agent gets the last Next steps, the tasks in flight and what needs
+  action in each (source changes to review, blocking findings), what's due and what's waiting
+  for review. If `snapshot.md` is more than four hours old, a `dev day start`
   starts in the background, unless a sync is already running.
 - **Before each shell command and file edit**, the [command check](#the-command-check) runs.
 - **At session end**, the session's transcript is saved to `work-sessions/<date>/`, with
@@ -791,7 +822,11 @@ In **Copilot CLI** and **Claude Code**, hooks run on their own:
 
 The hooks are guarded: on a machine without dev, they do nothing. Other tools can run
 `dev day start` and `dev day end` by hand and lose nothing but the automatic context.
-Worktrees get copies of the hooks and MCP config, so agents working there have them too.
+Worktrees get copies of the skills, hooks and MCP config, so agents opened there have them
+too. Git ignores the copies. `dev files`, `dev add` and `dev remove` bring them up to date,
+and remove a copy whose source is gone, like a removed service's skill. They only touch
+copies still as dev wrote them, never a file the branch tracks; edit the workspace's own
+files, not the copies.
 
 `dev day end` also catches up on sessions that were killed before their end hook ran.
 VS Code sessions aren't saved as transcripts yet.
@@ -853,7 +888,7 @@ anything.
 | `dev <service> scope` | Show what a service syncs. `--choose` opens the picker; `--set <yaml>` changes it directly |
 | `dev <service> scope add\|remove <items...>` | Change a list-shaped scope by link or id: Confluence pages, Notion pages, repositories, boards, Figma files |
 | `dev doctor` | Check everything, with a fix for each problem. `--offline` skips login checks |
-| `dev files` | Update the generated agent files, leaving hand-edited ones alone |
+| `dev files` | Update the generated agent files, leaving hand-edited ones alone, and dev's copies in each worktree |
 
 ### Daily work
 
@@ -867,6 +902,7 @@ anything.
 | `dev task list` | Tasks from every task source. `--mine`, `--all`, `--refresh`, `--json` |
 | `dev task start <ref>` | Worktree, branch and notes for a task. `--title`, `--type`, `--base` |
 | `dev task status [id]` | What's in flight, or one task and its record. `--json` |
+| `dev task diff <id>` | What a task changed since its branch left the base, uncommitted changes included. `--stat` |
 | `dev task cleanup` | Which worktrees can go. `--remove` |
 | `dev check "<command>"` | What the command check decides |
 

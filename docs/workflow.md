@@ -229,8 +229,13 @@ commands it runs. They're generated into `.github/skills/`, `.claude/skills/` an
 
 - **Every skill can be picked up by the agent**, since not every tool supports skills that
   only the person can start.
-- **Each phase skill ends by presenting its result and stopping.** The developer decides
-  when to move to the next phase.
+- **Each phase skill ends by presenting its result, writing the next step in
+  `progress.md`, and stopping.** The developer decides when to move to the next phase. A tool
+  that can't stop and wait still leaves the next step where the next session finds it.
+- **`task-build` is a skill, with a rule in `AGENTS.md`** to keep the record current
+  whichever way the work is done, so guidance doesn't depend on an agent picking the skill up.
+- **The entry formats in each skill are generated** from the definitions dev parses with, and
+  the workspace's `conventions.checks`, when set, are written into the skills that run them.
 - **`task-verify` runs in a fresh context**, as a subagent where the tool has them, so it
   doesn't grade its own build. It follows the verification plan; what it can't check is
   marked `needs-person`, for the developer.
@@ -276,7 +281,7 @@ Each step is useful on its own.
 2. **The task record** (built in 0.4). Entry formats defined once, the parser, `dev task status` with the
    record's state, the brief's new front matter, warnings in `dev doctor`, reading old
    briefs. Done when `dev task status ABC-123` reports a hand-written record correctly.
-3. **Skills.** `task-understand`, then `task-plan` with the verification plan, then
+3. **Skills** (built in 0.4). `task-understand`, then `task-plan` with the verification plan, then
    `task-verify`, then `task-changes`. `task-build` and `task-handover` last. The
    session-start hook and snapshot lines arrive with them.
 4. **Rounds.** Finding the task's PR, reopen detection, `history/<n>/`, and the round in
@@ -287,7 +292,3 @@ Each step is useful on its own.
 - **Which finished tasks keep watching their sources.** All of them forever, or until some
   time after their PR merged.
 - **How long change reports are kept.** They're small, but every sync adds to one.
-- **`task-build`: a skill or rules.** Building guidance may fit better as rules in
-  `AGENTS.md` than as a skill an agent has to pick up.
-- **How a skill reports its result** when the tool has no way to stop and wait: a closing
-  message, or an entry in `progress.md`.

@@ -9,7 +9,9 @@ import { count, step } from "../core/progress.ts";
 import { loadConfig, type ProjectConfig } from "../core/project-config.ts";
 import { enabledServices } from "../core/scaffold.ts";
 import { basesFor, legacyTaskId, taskDir, taskId, workspaceBase, writeTaskNotes } from "../core/tasks.ts";
+import { git, gitMaybe } from "../core/git.ts";
 import {
+  baseRef,
   branchName,
   copyLocalFiles,
   DEFAULT_BRANCH_PATTERN,
@@ -125,7 +127,7 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
     if (copy.result === "not ignored by git") out.warn(`Didn't copy ${copy.file}: git doesn't ignore it, so it could be committed by accident.`);
   }
   out.info(notes.length > 0 ? `Notes: wrote ${notes.join(", ")}` : `Notes: tasks/${id}/ already there and left as it was`);
-  out.info(`\nDone: next, fill in tasks/${id}/brief.md and work in worktrees/${id}. Nothing was pushed.`);
+  out.info(`\nDone: next, run the task-understand skill for ${id} to fill in tasks/${id}/brief.md. Nothing was pushed.`);
 }
 
 export async function runTaskStatus(out: Output, id: string | undefined, options: { json?: boolean } = {}): Promise<void> {
@@ -177,6 +179,28 @@ export async function runTaskStatus(out: Output, id: string | undefined, options
     const notes = recordNotes(record);
     out.info(`${each}  ${state.branch}  ${parts.join(", ")}${notes.length > 0 ? `  · ${notes.join(" · ")}` : ""}`);
   }
+}
+
+/**
+ * What the task changed: the worktree against where its branch left the base, uncommitted
+ * changes included, since that's what a verifier needs to see before anything is committed.
+ * The base is resolved as status resolves it: the remote's copy when there is one.
+ */
+export async function runTaskDiff(out: Output, id: string, options: { stat?: boolean } = {}): Promise<void> {
+  const root = requireWorkspaceRoot();
+  const repo = requireClone(root);
+  const dir = worktreeDir(root, id);
+  if (!existsSync(dir)) throw new DevError(`There's no worktree for ${id}.`, `Start it with "dev task start ${id}".`);
+  const base = await basesFor(root, await workspaceBase(repo, loadConfig(root)))(id);
+  const ref = await baseRef(repo, base);
+  const start = await gitMaybe(dir, ["merge-base", ref, "HEAD"]);
+  if (!start) throw new DevError(`${id}'s branch has nothing in common with ${ref}.`, `Check the brief's base, or run "git -C worktrees/${id} log".`);
+  const diff = await git(dir, ["diff", ...(options.stat ? ["--stat"] : []), start]);
+  const untracked = (await git(dir, ["ls-files", "--others", "--exclude-standard"])).split("\n").filter(Boolean);
+
+  out.info(`${id}: changes since the branch left ${ref} (${start.slice(0, 7)}), committed or not.`);
+  out.info(diff ? `\n${diff}` : "\nNo changes to tracked files.");
+  if (untracked.length > 0) out.info(`\nNew files git doesn't track yet, so not in the diff. Read them directly:${untracked.map((f) => `\n  worktrees/${id}/${f}`).join("")}`);
 }
 
 /**

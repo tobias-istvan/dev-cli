@@ -18,7 +18,7 @@ the services yourself.
 | `dev.yaml` | The project config: the repository, services and their scopes |
 | `repository/` | The code. Read its own `AGENTS.md` before changing code |
 | `worktrees/<task>/` | One checkout per task. Disposable |
-| `tasks/<task>/` | Each task's brief, progress, decisions and PR description. Never deleted |
+| `tasks/<task>/` | Each task's record: brief, findings, decisions, plan, verification, source changes, follow-ups, progress. Never deleted |
 {{folders}}
 
 ## Rules
@@ -35,6 +35,10 @@ the services yourself.
 6. **For "what are my tasks?" or "what should I work on?", run `dev task list --mine`,**
    not the index. In an index, items whose Why is parent, linked, pulled or former are
    context for the work, not the work.
+7. **Work on a task through its record in `tasks/<id>/`.** Run `dev task status <id>` to see
+   what's open. The `task-*` skills cover each phase; whichever you use, keep `progress.md`
+   and the logs current as you go, and end each phase by presenting the result and
+   stopping. The developer decides when to move on.
 {{rules}}
 ## Commands
 

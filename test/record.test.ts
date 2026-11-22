@@ -1,11 +1,13 @@
 /** The task record: entry formats, the parser, and what `dev task status` and `dev doctor` make of a record. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
-import { CHANGES, DECISIONS, FINDINGS, parseLog, renderEntry, VERIFICATION } from "../src/core/record.ts";
+import { CHANGES, DECISIONS, FINDINGS, LOGS, parseLog, renderEntry, VERIFICATION } from "../src/core/record.ts";
+import { TASK_SKILLS } from "../src/core/scaffold.ts";
+import { splitFrontMatter } from "../src/core/front-matter.ts";
 
 const CLI = path.join(import.meta.dirname, "..", "src", "cli.ts");
 const PLUGIN = path.join(import.meta.dirname, "fixtures", "example-plugin.ts");
@@ -35,11 +37,12 @@ before(() => {
 
 after(() => rmSync(base, { recursive: true, force: true }));
 
-function dev(cwd: string, args: string[]) {
+function dev(cwd: string, args: string[], input?: unknown, extra: Record<string, string> = {}) {
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, XDG_CONFIG_HOME: path.join(base, "config"), DEV_EXTRA_PLUGINS: PLUGIN, DEV_EXAMPLE_TOKEN: "good" },
+    input: input === undefined ? undefined : JSON.stringify(input),
+    env: { ...process.env, XDG_CONFIG_HOME: path.join(base, "config"), DEV_EXTRA_PLUGINS: PLUGIN, DEV_EXAMPLE_TOKEN: "good", ...extra },
     timeout: 60_000,
   });
   return { code: result.status, out: result.stdout, err: result.stderr };
@@ -177,6 +180,10 @@ test("task status reports a hand-written record, with and without a worktree", (
   assert.equal(started.code, 0, started.err);
   const brief = readFileSync(path.join(root, "tasks", "ABC-123", "brief.md"), "utf8");
   assert.match(brief, /\nround: 1\nsources: \[\] #/, "a new brief records the round and a place for sources");
+  assert.match(brief, /Run the `task-understand` skill/);
+  assert.match(brief, /## Record\n[\s\S]*\[findings\.md\]\(findings\.md\)/);
+  assert.ok(!brief.includes("## Open questions"), "questions go in findings.md now");
+  assert.match(started.out, /next, run the task-understand skill for ABC-123/);
   writeRecord(root, "ABC-123", BRIEF("ABC-123"));
 
   const status = dev(root, ["task", "status", "ABC-123"]);
@@ -248,4 +255,159 @@ test("doctor warns about malformed record entries without failing", () => {
   const report = dev(root, ["doctor", "--offline"]);
   assert.equal(report.code, clean.code, "warnings don't change the exit code");
   assert.match(report.err, /3 task record warnings, from entries that don't follow the format:\n {2}tasks\/ABC-9\/brief\.md {2}round is "two", not a whole number from 1\n {2}tasks\/ABC-9\/brief\.md {2}sources lists confluence\/DOCS\/Ordering\/index\.md, which isn't in the workspace\n {2}tasks\/ABC-9\/follow-ups\.md:3 {2}O1 is filed but has no "- Filed as:"/);
+});
+
+test("the task skills are generated with the record's formats and the workspace's checks", () => {
+  const root = workspace();
+  assert.equal(dev(root, ["files"]).code, 0);
+  const help = new Map<string, boolean>();
+  for (const name of TASK_SKILLS) {
+    const text = readFileSync(path.join(root, ".claude", "skills", name, "SKILL.md"), "utf8");
+    for (const folder of [".github/skills", ".agents/skills"]) assert.equal(readFileSync(path.join(root, folder, name, "SKILL.md"), "utf8"), text);
+    assert.match(text, /^Paths are from the workspace root/m, `${name} says where its paths start`);
+    assert.ok(!text.includes("{{"), `${name}: every placeholder is filled`);
+    assert.match(text, /dev task status <id>/, `${name} starts from the record's state`);
+    assert.match(text, /stop/i, `${name} ends by stopping`);
+
+    // Each example is in the format the parser reads.
+    for (const [, example] of text.matchAll(/```markdown\n([\s\S]*?)```/g)) {
+      const format = LOGS.find((f) => example!.startsWith(`## ${f.prefix}`))!;
+      assert.ok(format, `${name}: an example names its log`);
+      assert.deepEqual(parseLog(format, example!).warnings, [], `${name}: the ${format.file} example parses`);
+    }
+    // Every command it mentions exists.
+    for (const [, command] of text.matchAll(/`dev ([a-z]+(?: [a-z]+)?)/g)) {
+      if (!help.has(command!)) help.set(command!, dev(root, [...command!.split(" "), "--help"]).code === 0);
+      assert.ok(help.get(command!), `${name} mentions "dev ${command}", which exists`);
+    }
+  }
+  // Every generated skill's front matter is YAML a strict parser reads, colons and all.
+  for (const folder of [".github/skills", ".claude/skills", ".agents/skills"]) {
+    for (const name of readdirSync(path.join(root, folder))) {
+      const { data } = splitFrontMatter(readFileSync(path.join(root, folder, name, "SKILL.md"), "utf8"));
+      assert.equal(data?.name, name, `${folder}/${name} parses`);
+      assert.ok(typeof data?.description === "string" && data.description.length > 20, `${folder}/${name} has a description`);
+    }
+  }
+
+  const understand = readFileSync(path.join(root, ".claude", "skills", "task-understand", "SKILL.md"), "utf8");
+  assert.match(understand, /\*\*`findings\.md`\*\*: Gaps, conflicts/);
+  assert.match(understand, /- Status: `open`, `answered`, `assumed`/);
+  assert.match(readFileSync(path.join(root, "AGENTS.md"), "utf8"), /`\.github\/skills\/task-verify\/SKILL\.md` \| Check a task's work/);
+
+  const verify = () => readFileSync(path.join(root, ".claude", "skills", "task-verify", "SKILL.md"), "utf8");
+  assert.match(verify(), /suggest naming them in `dev\.yaml` under `conventions\.checks`/);
+  writeFileSync(path.join(root, "dev.yaml"), `${readFileSync(path.join(root, "dev.yaml"), "utf8")}conventions:\n  checks:\n    test: npm test\n    lint: npm run lint\n`);
+  assert.equal(dev(root, ["files"]).code, 0);
+  assert.match(verify(), /From `dev\.yaml`'s `conventions\.checks`, run in `worktrees\/<id>\/`:\n\n {3}- test: `npm test`\n {3}- lint: `npm run lint`/);
+
+  writeFileSync(path.join(root, "dev.yaml"), readFileSync(path.join(root, "dev.yaml"), "utf8").replace("test: npm test", "test: [npm, test]"));
+  assert.match(dev(root, ["doctor", "--offline"]).out, /"conventions\.checks" should name each check and its command/);
+});
+
+test("session start and the snapshot say what needs action in each record", () => {
+  const root = workspace();
+  assert.equal(dev(root, ["task", "start", "ABC-123"]).code, 0);
+  writeRecord(root, "ABC-123", BRIEF("ABC-123"));
+  writeFileSync(path.join(root, "worktrees", "ABC-123", "sort.ts"), "// work in progress\n");
+  writeRecord(root, "DONE-1", BRIEF("DONE-1"), { "changes.md": "# Source changes\n\n## C1 · atlassian:jira · new\n\n## C2 · atlassian:jira · new\n" });
+  writeRecord(root, "DONE-2", BRIEF("DONE-2"), { "changes.md": "# Source changes\n\n## C1 · atlassian:jira · reviewed\n\n- Led to: nothing\n" });
+
+
+  const day = dev(root, ["day", "start"]);
+  assert.equal(day.code, 0, day.err);
+  const snapshot = readFileSync(path.join(root, "snapshot.md"), "utf8");
+  assert.match(snapshot, /- \[ABC-123\]\(tasks\/ABC-123\/brief\.md\) on `[^`]+` · 0 commits, 1 uncommitted, round 2, 1 blocking, 1 change to review, 1 failed, 4 warnings/);
+  assert.match(snapshot, /Finished tasks whose sources changed: \[DONE-1\]\(tasks\/DONE-1\/changes\.md\) \(C1, C2\)\./);
+  assert.ok(!snapshot.includes("DONE-2"), "a finished task with nothing new isn't mentioned");
+
+  // With the snapshot fresh, session start doesn't refresh it in the background.
+  const start = dev(root, ["hook", "session-start", "--tool", "claude"], { session_id: "s-1", cwd: root }, { CLAUDE_PROJECT_DIR: root });
+  assert.equal(start.code, 0, start.err);
+  const context: string = JSON.parse(start.out).hookSpecificOutput.additionalContext;
+  assert.match(context, /\nABC-123: 1 source change to review \(C3\), with task-changes, 1 blocking finding \(F1\)\./);
+  assert.doesNotMatch(context, /refreshing it in the background/);
+});
+
+test("a task's worktree carries the skills, and dev files keeps dev's copies current", () => {
+  const root = workspace();
+  assert.equal(dev(root, ["task", "start", "ABC-123"]).code, 0);
+  const worktree = path.join(root, "worktrees", "ABC-123");
+  for (const folder of [".github/skills", ".claude/skills", ".agents/skills"]) {
+    for (const name of ["dev-cli", ...TASK_SKILLS]) {
+      assert.equal(readFileSync(path.join(worktree, folder, name, "SKILL.md"), "utf8"), readFileSync(path.join(root, folder, name, "SKILL.md"), "utf8"), `${folder}/${name}`);
+    }
+  }
+  assert.equal(git(worktree, "status", "--porcelain"), "", "git ignores the copies, so they can't be committed");
+
+  // The workspace's skills change: dev's copies follow; a file of the person's own doesn't.
+  writeFileSync(path.join(worktree, "notes.md"), "mine\n");
+  writeFileSync(path.join(root, "dev.yaml"), `${readFileSync(path.join(root, "dev.yaml"), "utf8")}conventions:\n  checks:\n    test: npm test\n`);
+  const files = dev(root, ["files"]);
+  assert.equal(files.code, 0, files.err);
+  assert.match(files.out, /Updated the agent files in worktrees\/ABC-123\./);
+  assert.match(readFileSync(path.join(worktree, ".claude", "skills", "task-verify", "SKILL.md"), "utf8"), /- test: `npm test`/);
+  assert.equal(readFileSync(path.join(worktree, "notes.md"), "utf8"), "mine\n");
+  assert.doesNotMatch(dev(root, ["files"]).out, /Updated the agent files/, "nothing to update the second time");
+});
+
+test("dev's copies in one worktree never make a file in another worktree dev's", () => {
+  const root = workspace();
+  for (const id of ["ABC-123", "ABC-124"]) assert.equal(dev(root, ["task", "start", id]).code, 0);
+  const mine = path.join(root, "worktrees", "ABC-123");
+  const theirs = path.join(root, "worktrees", "ABC-124");
+  const verify = ".claude/skills/task-verify/SKILL.md";
+  const notes = ".claude/skills/example-notes/SKILL.md";
+
+  // In the second worktree: the branch commits a copy as it is, and two are edited by hand.
+  git(theirs, "add", "--force", verify);
+  git(theirs, "-c", "user.email=t@example.test", "-c", "user.name=T", "commit", "--quiet", "-m", "Track the skill");
+  writeFileSync(path.join(theirs, ".agents/skills/task-verify/SKILL.md"), "edited by hand\n");
+  writeFileSync(path.join(theirs, notes), "edited by hand\n");
+  const tracked = readFileSync(path.join(theirs, verify), "utf8");
+
+  writeFileSync(path.join(root, "dev.yaml"), `${readFileSync(path.join(root, "dev.yaml"), "utf8")}conventions:\n  checks:\n    test: npm test\n`);
+  const files = dev(root, ["files"]);
+  assert.equal(files.code, 0, files.err);
+  assert.match(readFileSync(path.join(mine, verify), "utf8"), /- test: `npm test`/);
+  assert.equal(readFileSync(path.join(theirs, verify), "utf8"), tracked, "a file the branch tracks is never written");
+  assert.equal(readFileSync(path.join(theirs, ".agents/skills/task-verify/SKILL.md"), "utf8"), "edited by hand\n");
+  assert.equal(git(theirs, "status", "--porcelain"), "");
+
+  // A disconnected service's skill leaves the worktrees, unless someone edited the copy.
+  assert.ok(existsSync(path.join(mine, notes)));
+  const removed = dev(root, ["remove", "notes"]);
+  assert.equal(removed.code, 0, removed.err);
+  assert.ok(!existsSync(path.join(root, notes)));
+  assert.ok(!existsSync(path.join(mine, path.dirname(notes))), "the copy and its folder are gone");
+  assert.ok(existsSync(path.join(mine, ".mcp.json")) === existsSync(path.join(root, ".mcp.json")), "and its MCP server");
+  if (existsSync(path.join(mine, ".mcp.json"))) assert.ok(!readFileSync(path.join(mine, ".mcp.json"), "utf8").includes("example-mcp"));
+  assert.equal(readFileSync(path.join(theirs, notes), "utf8"), "edited by hand\n");
+});
+
+test("task diff shows everything since the branch left its base, from the remote's copy of it", () => {
+  const root = workspace();
+  // A base that exists only on the remote, as a clone that never checked out develop has it.
+  const repo = path.join(root, "repository");
+  git(repo, "push", "--quiet", "origin", "main:develop");
+  git(repo, "fetch", "--quiet", "origin");
+  assert.equal(spawnSync("git", ["rev-parse", "--verify", "--quiet", "refs/heads/develop"], { cwd: repo }).status, 1);
+  assert.equal(dev(root, ["task", "start", "ABC-7", "--base", "develop"]).code, 0);
+
+  const worktree = path.join(root, "worktrees", "ABC-7");
+  git(worktree, "config", "user.email", "t@example.test");
+  git(worktree, "config", "user.name", "T");
+  writeFileSync(path.join(worktree, "README.md"), "code\ncommitted\n");
+  git(worktree, "commit", "--quiet", "-am", "Committed work");
+  writeFileSync(path.join(worktree, "README.md"), "code\ncommitted\nuncommitted\n");
+  writeFileSync(path.join(worktree, "sort.ts"), "export {};\n");
+
+  const diff = dev(root, ["task", "diff", "ABC-7"]);
+  assert.equal(diff.code, 0, diff.err);
+  assert.match(diff.out, /^ABC-7: changes since the branch left origin\/develop \([0-9a-f]{7}\), committed or not\./);
+  assert.match(diff.out, /\n\+committed\n\+uncommitted\n/);
+  assert.match(diff.out, /New files git doesn't track yet, so not in the diff\. Read them directly:\n {2}worktrees\/ABC-7\/sort\.ts\n$/);
+  assert.doesNotMatch(diff.out, /SKILL\.md/, "dev's own copies aren't the task's work");
+  assert.match(dev(root, ["task", "diff", "ABC-7", "--stat"]).out, /README\.md \| 2 \+\+/);
+  assert.match(dev(root, ["task", "diff", "NOPE"]).err, /no worktree for NOPE/);
 });
