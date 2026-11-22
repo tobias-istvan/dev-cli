@@ -1,12 +1,13 @@
 /** The task record: entry formats, the parser, and what `dev task status` and `dev doctor` make of a record. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 import { CHANGES, DECISIONS, FINDINGS, LOGS, parseLog, renderEntry, VERIFICATION } from "../src/core/record.ts";
 import { TASK_SKILLS } from "../src/core/scaffold.ts";
+import { splitFrontMatter } from "../src/core/front-matter.ts";
 
 const CLI = path.join(import.meta.dirname, "..", "src", "cli.ts");
 const PLUGIN = path.join(import.meta.dirname, "fixtures", "example-plugin.ts");
@@ -263,7 +264,7 @@ test("the task skills are generated with the record's formats and the workspace'
   for (const name of TASK_SKILLS) {
     const text = readFileSync(path.join(root, ".claude", "skills", name, "SKILL.md"), "utf8");
     for (const folder of [".github/skills", ".agents/skills"]) assert.equal(readFileSync(path.join(root, folder, name, "SKILL.md"), "utf8"), text);
-    assert.match(text, new RegExp(`^---\\nname: ${name}\\ndescription: .+\\n---\\n`));
+    assert.match(text, /^Paths are from the workspace root/m, `${name} says where its paths start`);
     assert.ok(!text.includes("{{"), `${name}: every placeholder is filled`);
     assert.match(text, /dev task status <id>/, `${name} starts from the record's state`);
     assert.match(text, /stop/i, `${name} ends by stopping`);
@@ -280,6 +281,15 @@ test("the task skills are generated with the record's formats and the workspace'
       assert.ok(help.get(command!), `${name} mentions "dev ${command}", which exists`);
     }
   }
+  // Every generated skill's front matter is YAML a strict parser reads, colons and all.
+  for (const folder of [".github/skills", ".claude/skills", ".agents/skills"]) {
+    for (const name of readdirSync(path.join(root, folder))) {
+      const { data } = splitFrontMatter(readFileSync(path.join(root, folder, name, "SKILL.md"), "utf8"));
+      assert.equal(data?.name, name, `${folder}/${name} parses`);
+      assert.ok(typeof data?.description === "string" && data.description.length > 20, `${folder}/${name} has a description`);
+    }
+  }
+
   const understand = readFileSync(path.join(root, ".claude", "skills", "task-understand", "SKILL.md"), "utf8");
   assert.match(understand, /\*\*`findings\.md`\*\*: Gaps, conflicts/);
   assert.match(understand, /- Status: `open`, `answered`, `assumed`/);
@@ -317,4 +327,53 @@ test("session start and the snapshot say what needs action in each record", () =
   const context: string = JSON.parse(start.out).hookSpecificOutput.additionalContext;
   assert.match(context, /\nABC-123: 1 source change to review \(C3\), with task-changes, 1 blocking finding \(F1\)\./);
   assert.doesNotMatch(context, /refreshing it in the background/);
+});
+
+test("a task's worktree carries the skills, and dev files keeps dev's copies current", () => {
+  const root = workspace();
+  assert.equal(dev(root, ["task", "start", "ABC-123"]).code, 0);
+  const worktree = path.join(root, "worktrees", "ABC-123");
+  for (const folder of [".github/skills", ".claude/skills", ".agents/skills"]) {
+    for (const name of ["dev-cli", ...TASK_SKILLS]) {
+      assert.equal(readFileSync(path.join(worktree, folder, name, "SKILL.md"), "utf8"), readFileSync(path.join(root, folder, name, "SKILL.md"), "utf8"), `${folder}/${name}`);
+    }
+  }
+  assert.equal(git(worktree, "status", "--porcelain"), "", "git ignores the copies, so they can't be committed");
+
+  // The workspace's skills change: dev's copies follow; a file of the person's own doesn't.
+  writeFileSync(path.join(worktree, "notes.md"), "mine\n");
+  writeFileSync(path.join(root, "dev.yaml"), `${readFileSync(path.join(root, "dev.yaml"), "utf8")}conventions:\n  checks:\n    test: npm test\n`);
+  const files = dev(root, ["files"]);
+  assert.equal(files.code, 0, files.err);
+  assert.match(files.out, /Updated the agent files in worktrees\/ABC-123\./);
+  assert.match(readFileSync(path.join(worktree, ".claude", "skills", "task-verify", "SKILL.md"), "utf8"), /- test: `npm test`/);
+  assert.equal(readFileSync(path.join(worktree, "notes.md"), "utf8"), "mine\n");
+  assert.doesNotMatch(dev(root, ["files"]).out, /Updated the agent files/, "nothing to update the second time");
+});
+
+test("task diff shows everything since the branch left its base, from the remote's copy of it", () => {
+  const root = workspace();
+  // A base that exists only on the remote, as a clone that never checked out develop has it.
+  const repo = path.join(root, "repository");
+  git(repo, "push", "--quiet", "origin", "main:develop");
+  git(repo, "fetch", "--quiet", "origin");
+  assert.equal(spawnSync("git", ["rev-parse", "--verify", "--quiet", "refs/heads/develop"], { cwd: repo }).status, 1);
+  assert.equal(dev(root, ["task", "start", "ABC-7", "--base", "develop"]).code, 0);
+
+  const worktree = path.join(root, "worktrees", "ABC-7");
+  git(worktree, "config", "user.email", "t@example.test");
+  git(worktree, "config", "user.name", "T");
+  writeFileSync(path.join(worktree, "README.md"), "code\ncommitted\n");
+  git(worktree, "commit", "--quiet", "-am", "Committed work");
+  writeFileSync(path.join(worktree, "README.md"), "code\ncommitted\nuncommitted\n");
+  writeFileSync(path.join(worktree, "sort.ts"), "export {};\n");
+
+  const diff = dev(root, ["task", "diff", "ABC-7"]);
+  assert.equal(diff.code, 0, diff.err);
+  assert.match(diff.out, /^ABC-7: changes since the branch left origin\/develop \([0-9a-f]{7}\), committed or not\./);
+  assert.match(diff.out, /\n\+committed\n\+uncommitted\n/);
+  assert.match(diff.out, /New files git doesn't track yet, so not in the diff\. Read them directly:\n {2}worktrees\/ABC-7\/sort\.ts\n$/);
+  assert.doesNotMatch(diff.out, /SKILL\.md/, "dev's own copies aren't the task's work");
+  assert.match(dev(root, ["task", "diff", "ABC-7", "--stat"]).out, /README\.md \| 2 \+\+/);
+  assert.match(dev(root, ["task", "diff", "NOPE"]).err, /no worktree for NOPE/);
 });

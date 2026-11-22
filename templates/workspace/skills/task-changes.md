@@ -1,12 +1,13 @@
 ---
-name: task-changes
-description: Work out what changed sources mean for a task, and update its record. Use when dev task status, the snapshot or the session start reports source changes to review.
+name: "task-changes"
+description: "Work out what changed sources mean for a task, and update its record. Use when dev task status, the snapshot or the session start reports source changes to review."
 ---
 
 # Reviewing source changes
 
 Reads the `new` entries in `changes.md` and the record. Writes findings, decisions and the
 state files in `tasks/<id>/`, and marks each entry `reviewed`.
+Paths are from the workspace root: two folders up from a task's worktree.
 
 1. Run `dev task status <id>` for the changes to review. Read each `new` entry in
    `tasks/<id>/changes.md`, and the item it names. The change report it links has the sync's

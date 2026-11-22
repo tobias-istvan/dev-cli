@@ -1,12 +1,13 @@
 ---
-name: task-plan
-description: Plan a task once it's understood: the approach and steps, a verification plan for each acceptance criterion, and the decisions behind them. Use after task-understand, or when asked to plan a task.
+name: "task-plan"
+description: "Plan a task once it's understood: the approach and steps, a verification plan for each acceptance criterion, and the decisions behind them. Use after task-understand, or when asked to plan a task."
 ---
 
 # Planning a task
 
 Reads the brief, findings, decisions and the code. Writes `plan.md`, `verification.md` and
 `decisions.md` in `tasks/<id>/`.
+Paths are from the workspace root: two folders up from a task's worktree.
 
 1. Run `dev task status <id>`. If a finding blocks the work, say so and stop. If the person
    says to plan anyway, record each assumption: mark the finding `assumed`, and add a

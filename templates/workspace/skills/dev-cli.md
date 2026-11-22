@@ -1,6 +1,6 @@
 ---
-name: dev-cli
-description: Find and run the dev command for syncing services, starting a task, or checking the workspace. Use whenever a task needs fresh data or you're unsure which command does something.
+name: "dev-cli"
+description: "Find and run the dev command for syncing services, starting a task, or checking the workspace. Use whenever a task needs fresh data or you're unsure which command does something."
 ---
 
 # Using the dev CLI

@@ -643,6 +643,7 @@ Running it again leaves the worktree, brief and progress note as they are. It ne
 dev task status               # every task in flight: commits, uncommitted changes, how far behind, what needs attention
 dev task status ABC-123       # one task's commits, changed files and record
 dev task status --json        # the same, for tools
+dev task diff ABC-123         # what the task changed since its branch left the base, uncommitted changes included
 dev task cleanup              # which worktrees can go, and why the rest can't
 dev task cleanup --remove     # remove the safe ones
 ```
@@ -821,7 +822,9 @@ In **Copilot CLI** and **Claude Code**, hooks run on their own:
 
 The hooks are guarded: on a machine without dev, they do nothing. Other tools can run
 `dev day start` and `dev day end` by hand and lose nothing but the automatic context.
-Worktrees get copies of the hooks and MCP config, so agents working there have them too.
+Worktrees get copies of the skills, hooks and MCP config, so agents opened there have them
+too. Git ignores the copies, and `dev files` brings them up to date; edit the workspace's
+own files, not the copies.
 
 `dev day end` also catches up on sessions that were killed before their end hook ran.
 VS Code sessions aren't saved as transcripts yet.
@@ -883,7 +886,7 @@ anything.
 | `dev <service> scope` | Show what a service syncs. `--choose` opens the picker; `--set <yaml>` changes it directly |
 | `dev <service> scope add\|remove <items...>` | Change a list-shaped scope by link or id: Confluence pages, Notion pages, repositories, boards, Figma files |
 | `dev doctor` | Check everything, with a fix for each problem. `--offline` skips login checks |
-| `dev files` | Update the generated agent files, leaving hand-edited ones alone |
+| `dev files` | Update the generated agent files, leaving hand-edited ones alone, and dev's copies in each worktree |
 
 ### Daily work
 
@@ -897,6 +900,7 @@ anything.
 | `dev task list` | Tasks from every task source. `--mine`, `--all`, `--refresh`, `--json` |
 | `dev task start <ref>` | Worktree, branch and notes for a task. `--title`, `--type`, `--base` |
 | `dev task status [id]` | What's in flight, or one task and its record. `--json` |
+| `dev task diff <id>` | What a task changed since its branch left the base, uncommitted changes included. `--stat` |
 | `dev task cleanup` | Which worktrees can go. `--remove` |
 | `dev check "<command>"` | What the command check decides |
 

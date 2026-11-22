@@ -325,7 +325,7 @@ test("dev files writes the agent files for the enabled services only", () => {
   assert.ok(!agents.includes("{{"), "every placeholder is filled");
 
   for (const folder of [".github/skills", ".claude/skills", ".agents/skills"]) {
-    assert.match(readFileSync(path.join(root, folder, "dev-cli", "SKILL.md"), "utf8"), /^---\nname: dev-cli\n/);
+    assert.match(readFileSync(path.join(root, folder, "dev-cli", "SKILL.md"), "utf8"), /^---\nname: "dev-cli"\ndescription: "/);
     assert.match(readFileSync(path.join(root, folder, "example-notes", "SKILL.md"), "utf8"), /Read notes\/index.md first/);
   }
   assert.ok(existsSync(path.join(root, "docs", "example-notes.md")));

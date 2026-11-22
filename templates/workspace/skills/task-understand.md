@@ -1,12 +1,13 @@
 ---
-name: task-understand
-description: Understand a task before planning it: fill in its brief from the sources, and record gaps, conflicts and missing information as findings. Use after "dev task start", or when asked to understand, discover or refine a task.
+name: "task-understand"
+description: "Understand a task before planning it: fill in its brief from the sources, and record gaps, conflicts and missing information as findings. Use after \"dev task start\", or when asked to understand, discover or refine a task."
 ---
 
 # Understanding a task
 
 Reads the brief's sources and the code. Writes `brief.md` and `findings.md` in
 `tasks/<id>/`. The id is the one the person gives, or the task whose worktree you're in.
+Paths are from the workspace root: two folders up from a task's worktree.
 
 1. Run `dev task status <id>`, then read `tasks/<id>/brief.md`.
 2. Read each source the brief links to, and each file its `sources:` lists. Follow their

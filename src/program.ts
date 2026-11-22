@@ -262,7 +262,7 @@ A file you've edited by hand is left as it is and listed, so this is always safe
     )
     .action(async () => {
       const { runFiles } = await import("./commands/files.ts");
-      runFiles(program, registry, out);
+      await runFiles(program, registry, out);
     });
 
   program
@@ -328,6 +328,16 @@ are context, not your work, unless they're also marked mine.`),
     .action(async (id: string | undefined, options: { json?: boolean }) => {
       const { runTaskStatus } = await import("./commands/task.ts");
       await runTaskStatus(out, id, options);
+    });
+
+  task
+    .command("diff")
+    .description("Show what a task changed since its branch left the base, uncommitted changes included")
+    .argument("<id>", "The task")
+    .option("--stat", "Only the files and how much changed in each")
+    .action(async (id: string, options: { stat?: boolean }) => {
+      const { runTaskDiff } = await import("./commands/task.ts");
+      await runTaskDiff(out, id, options);
     });
 
   task

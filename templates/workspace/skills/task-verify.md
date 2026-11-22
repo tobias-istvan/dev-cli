@@ -1,20 +1,22 @@
 ---
-name: task-verify
-description: Check a task's work against its verification plan, in a fresh context, and record the result and evidence for each criterion. Use when a task is built, or when asked to verify or test it.
+name: "task-verify"
+description: "Check a task's work against its verification plan, in a fresh context, and record the result and evidence for each criterion. Use when a task is built, or when asked to verify or test it."
 ---
 
 # Verifying a task
 
 Reads the acceptance criteria, `verification.md`, the diff and the sources. Writes the
 results in `verification.md` and evidence in `evidence/`, in `tasks/<id>/`.
+Paths are from the workspace root: two folders up from a task's worktree.
 
 Run this in a fresh context, so the work isn't graded by whoever built it: as a subagent
 if your tool has them, otherwise in a new session. Record what you find; don't fix it here.
 
 1. Run `dev task status <id>`. Read the brief's acceptance criteria and `verification.md`.
    With no verification plan, say so and stop: planning it is `task-plan`'s job.
-2. Read the diff, `git -C worktrees/<id> diff <base>...HEAD`, where the base is the brief's
-   `base`. Read the sources the criteria come from.
+2. Read what the task changed with `dev task diff <id>`: everything since its branch left
+   the base, uncommitted changes included, and the new files git doesn't track yet. Read the
+   sources the criteria come from.
 3. Run the checks:
 
 {{checks}}

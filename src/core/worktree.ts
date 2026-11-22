@@ -101,15 +101,34 @@ Never push and never open a pull request from here unless the person asks you to
 
 const INSTRUCTIONS_FILE = ".github/instructions/dev-workspace.instructions.md";
 const COPIED = [".github/hooks/dev.json", ".claude/settings.json", ".mcp.json", ".vscode/mcp.json"];
+const SKILL_FOLDERS = [".github/skills", ".claude/skills", ".agents/skills"];
+
+/** The workspace's skills, so an agent opened in a worktree finds them too. */
+async function skillFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  for (const folder of SKILL_FOLDERS) {
+    try {
+      for (const entry of await readdir(path.join(root, folder), { withFileTypes: true })) {
+        if (entry.isDirectory() && existsSync(path.join(root, folder, entry.name, "SKILL.md"))) files.push(`${folder}/${entry.name}/SKILL.md`);
+      }
+    } catch {
+      // No skills for this tool.
+    }
+  }
+  return files.sort();
+}
 
 async function isTracked(worktree: string, file: string): Promise<boolean> {
   return (await gitMaybe(worktree, ["ls-files", "--error-unmatch", file])) !== null;
 }
 
+async function excludeFile(worktree: string): Promise<string> {
+  return path.resolve(worktree, await git(worktree, ["rev-parse", "--git-path", "info/exclude"]));
+}
+
 async function exclude(worktree: string, files: string[]): Promise<void> {
   if (files.length === 0) return;
-  const relative = await git(worktree, ["rev-parse", "--git-path", "info/exclude"]);
-  const file = path.resolve(worktree, relative);
+  const file = await excludeFile(worktree);
   const current = existsSync(file) ? await readFile(file, "utf8") : "";
   const missing = files.filter((f) => !current.split("\n").includes(`/${f}`));
   if (missing.length === 0) return;
@@ -117,23 +136,34 @@ async function exclude(worktree: string, files: string[]): Promise<void> {
   await appendFile(file, `${missing.map((f) => `/${f}`).join("\n")}\n`);
 }
 
-/** Never replaces a file that's there, and never touches one the code repository tracks. */
-export async function addAgentFiles(root: string, worktree: string): Promise<void> {
+/**
+ * Never touches a file the code repository tracks, or one that's there and isn't dev's.
+ * With refresh, dev's own copies (the ones git ignores through dev's exclude lines) are
+ * brought up to date with the workspace's: they're mirrors, edited at the workspace root.
+ * Returns the files written.
+ */
+export async function addAgentFiles(root: string, worktree: string, options: { refresh?: boolean } = {}): Promise<string[]> {
+  const ours = options.refresh && existsSync(await excludeFile(worktree)) ? (await readFile(await excludeFile(worktree), "utf8")).split("\n") : [];
   const written: string[] = [];
-  const add = async (file: string, write: (target: string) => Promise<void>): Promise<void> => {
+  const add = async (file: string, content: string): Promise<void> => {
     const target = safePath(worktree, file);
-    if (existsSync(target) || (await isTracked(worktree, file))) return;
+    if (existsSync(target)) {
+      if (!ours.includes(`/${file}`) || (await readFile(target, "utf8")) === content) return;
+    } else if (await isTracked(worktree, file)) {
+      return;
+    }
     await mkdir(path.dirname(target), { recursive: true });
-    await write(target);
+    await writeFile(target, content);
     written.push(file);
   };
 
-  await add(INSTRUCTIONS_FILE, (target) => writeFile(target, INSTRUCTIONS));
-  for (const file of COPIED) {
+  await add(INSTRUCTIONS_FILE, INSTRUCTIONS);
+  for (const file of [...COPIED, ...(await skillFiles(root))]) {
     const source = safePath(root, file);
-    if (existsSync(source)) await add(file, (target) => copyFile(source, target));
+    if (existsSync(source)) await add(file, await readFile(source, "utf8"));
   }
   await exclude(worktree, written);
+  return written;
 }
 
 export type CopyResult = "copied" | "already there" | "not in the clone" | "not ignored by git";

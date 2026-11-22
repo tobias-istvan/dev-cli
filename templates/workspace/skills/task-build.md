@@ -1,12 +1,13 @@
 ---
-name: task-build
-description: Build a planned task step by step, keeping its record current: progress, decisions, findings and follow-ups as they come up. Use when asked to build, implement or continue a task.
+name: "task-build"
+description: "Build a planned task step by step, keeping its record current: progress, decisions, findings and follow-ups as they come up. Use when asked to build, implement or continue a task."
 ---
 
 # Building a task
 
 Reads `plan.md` and `progress.md`. Writes `progress.md`, `decisions.md`, `findings.md` and
 `follow-ups.md` in `tasks/<id>/`, and the code in `worktrees/<id>/`.
+Paths are from the workspace root: two folders up from a task's worktree.
 
 1. Run `dev task status <id>`. Read `plan.md` and `progress.md`, and start from its
    "Next step". If source changes are waiting to be reviewed, say so first: the plan may be
