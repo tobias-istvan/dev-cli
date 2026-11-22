@@ -8,6 +8,7 @@ import { step } from "./progress.ts";
 import { loadCredentials, looseWarning } from "./credentials.ts";
 import { configPath, parseConfig } from "./project-config.ts";
 import { type CommandRow, generatedFiles } from "./scaffold.ts";
+import { readRecord, recordIds } from "./task-record.ts";
 import { CONFIG_FILE } from "./workspace.ts";
 
 /**
@@ -23,6 +24,8 @@ export interface DoctorOptions {
 export interface DoctorReport {
   problems: Problem[];
   notes: string[];
+  /** Malformed task record entries: worth fixing, never a failure. */
+  warnings: string[];
 }
 
 export async function doctor(root: string, registry: Registry, out: Output, options: DoctorOptions): Promise<DoctorReport> {
@@ -122,5 +125,11 @@ export async function doctor(root: string, registry: Registry, out: Output, opti
     problems.push({ message: `Generated files are missing or out of date: ${stale.join(", ")}.`, fix: 'Run "dev files".' });
   }
 
-  return { problems, notes };
+  // Task records: agents write them by hand, so what's malformed is a warning.
+  const warnings: string[] = [];
+  for (const id of await recordIds(root)) {
+    for (const w of (await readRecord(root, id)).warnings) warnings.push(`${w.file}${w.line ? `:${w.line}` : ""}  ${w.message}`);
+  }
+
+  return { problems, notes, warnings };
 }

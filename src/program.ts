@@ -323,10 +323,11 @@ are context, not your work, unless they're also marked mine.`),
   task
     .command("status")
     .description("Show the tasks in flight, or one task's state")
-    .argument("[id]", "A task, for its commits and changes")
-    .action(async (id: string | undefined) => {
+    .argument("[id]", "A task, for its commits, changes and record")
+    .option("--json", "Print JSON, for tools")
+    .action(async (id: string | undefined, options: { json?: boolean }) => {
       const { runTaskStatus } = await import("./commands/task.ts");
-      await runTaskStatus(out, id);
+      await runTaskStatus(out, id, options);
     });
 
   task

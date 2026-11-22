@@ -123,7 +123,8 @@ dev doctor
 ```
 
 `doctor` checks `dev.yaml`, every scope, every login (with the service itself, unless you
-pass `--offline`), and the generated files, and says how to fix each problem.
+pass `--offline`), and the generated files, and says how to fix each problem. It also warns
+about task record entries that don't follow the format; those never fail it.
 
 ### 3. Start the day
 
@@ -201,7 +202,7 @@ web/
   snapshot.md              what to work on, rewritten by dev day start
   repository/              the code (not committed)
   worktrees/<task>/        one checkout per task or review (not committed)
-  tasks/<task>/            brief.md, progress.md, changes.md, pr-description.md: never removed
+  tasks/<task>/            the task record: brief, logs, progress, PR description; never removed
   work-sessions/<date>/    the day's summary, source changes and saved agent sessions
   pull-requests/<N>/       GitHub pull requests to review, with review.md
   merge-requests/<N>/      GitLab merge requests to review, with review.md
@@ -628,15 +629,18 @@ dev task start "Try the new layout"      # a task with no ticket
 3. Files listed in `conventions.worktreeFiles`, like `.env.local`, are copied from the clone if
    git ignores them.
 4. `tasks/<id>/brief.md` and `progress.md` are written, if they aren't there. The brief records
-   the base, links every source, and lists links outside the scope.
+   the base and the round, links every source, and lists links outside the scope. Its
+   `sources:` is for files that matter but that those links don't reach; `dev sync` watches
+   them too.
 
 Running it again leaves the worktree, brief and progress note as they are. It never pushes.
 
 ### Checking in and cleaning up
 
 ```sh
-dev task status               # every task in flight: commits, uncommitted changes, how far behind
-dev task status ABC-123       # one task's commits and changed files
+dev task status               # every task in flight: commits, uncommitted changes, how far behind, what needs attention
+dev task status ABC-123       # one task's commits, changed files and record
+dev task status --json        # the same, for tools
 dev task cleanup              # which worktrees can go, and why the rest can't
 dev task cleanup --remove     # remove the safe ones
 ```
@@ -651,6 +655,50 @@ A worktree is **safe to remove** when nothing would be lost: no uncommitted chan
   Without a login or a connection, only the first two count.
 
 `tasks/<id>/` is never removed.
+
+### The task record
+
+`tasks/<id>/` holds the whole task. Besides the brief and the progress note, agents keep
+logs there. Each entry has an id that's never reused, so entries can refer to each other:
+
+| File | Entries | Kinds | Statuses |
+| --- | --- | --- | --- |
+| `findings.md` | `F1`… | `gap`, `conflict`, `missing` | `open`, `answered`, `assumed` |
+| `decisions.md` | `D1`… | – | – |
+| `verification.md` | `V1`… | the criterion it checks | `planned`, `passed`, `failed`, `needs-person` |
+| `changes.md` | `C1`… | the source's service | `new`, `reviewed` |
+| `follow-ups.md` | `O1`… | – | `noted`, `filed` |
+
+```markdown
+## F3 · conflict · open
+
+- Sources: jira/ABC-123/ticket.md (Acceptance criteria), figma/abc-12-34/design.md
+- Blocks: yes
+- Answer from: the ticket's reporter
+
+The ticket sorts the list by date; the design sorts it by name.
+```
+
+A heading with the id, the kind and the status; then fields as a list; then free text. Agents
+write the files directly; dev only reads them. `dev task status ABC-123` works out the
+task's state from them, even after its worktree is gone:
+
+```
+Record: tasks/ABC-123/
+Round 1 · PR #42
+Findings: 2 open (F1, F4), 1 blocking (F1), 1 assumed (F3), 1 answered
+Decisions: 2
+Source changes to review: C3
+Verification: 1 of 4 checks passed · failed: V2 · needs a person: V3 · planned: V4
+Follow-ups to file: O1
+```
+
+An entry that doesn't follow the format is a warning there and in `dev doctor`, never an
+error: an unknown status, a duplicate id, `Blocks` that isn't yes or no, a reviewed change
+with no `Led to`, a filed follow-up with no `Filed as`, an assumed finding with no decision
+that resolves it, or a reference to an id that isn't in the record. For a brief from before
+these logs, the questions under its "Open questions" and its ticked criteria stand in until
+`findings.md` and `verification.md` exist.
 
 ## Reviewing pull and merge requests
 
@@ -818,7 +866,7 @@ anything.
 | `dev index [service]` | Rebuild indexes from what's on disk |
 | `dev task list` | Tasks from every task source. `--mine`, `--all`, `--refresh`, `--json` |
 | `dev task start <ref>` | Worktree, branch and notes for a task. `--title`, `--type`, `--base` |
-| `dev task status [id]` | What's in flight, or one task |
+| `dev task status [id]` | What's in flight, or one task and its record. `--json` |
 | `dev task cleanup` | Which worktrees can go. `--remove` |
 | `dev check "<command>"` | What the command check decides |
 
