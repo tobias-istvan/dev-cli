@@ -35,7 +35,7 @@ export interface TaskRecord {
   pr: number | null;
   /** The day the round's PR merged, from the brief. */
   finished: string | null;
-  /** Unreviewed changes that reopened the task's ticket: `dev task start` starts the next round. */
+  /** Unreviewed changes that reopened the task's ticket. Once the task is finished, `dev task start` starts the next round. */
   reopened: string[];
   /** The brief's `sources:`. */
   sources: string[];
@@ -187,7 +187,7 @@ export function describeRecord(record: TaskRecord): string[] {
   const { findings, decisions, verification, changes, followUps } = record.logs;
   if (record.brief) lines.push(`Round ${record.round}${record.pr ? ` · PR #${record.pr}${record.finished ? `, merged ${record.finished}` : ""}` : ""}`);
   else lines.push(record.exists ? "No brief.md" : `No tasks/${record.id}/`);
-  if (record.reopened.length > 0) lines.push(`Reopened${ids(record.reopened)}: "dev task start ${record.id}" starts round ${record.round + 1}`);
+  if (record.reopened.length > 0) lines.push(`Ticket reopened${ids(record.reopened)}: ${reopenAdvice(record, (command) => `"${command}"`)}`);
 
   if (findings.exists) {
     const open = findings.byStatus.open ?? [];
@@ -232,6 +232,16 @@ export function describeRecord(record: TaskRecord): string[] {
     for (const w of record.warnings) lines.push(`  ${w.file}${w.line ? `:${w.line}` : ""}  ${w.message}`);
   }
   return lines;
+}
+
+/**
+ * What to do about a reopened ticket: a finished task starts its next round; one still in
+ * progress only reviews the change, since its round isn't over.
+ */
+export function reopenAdvice(record: TaskRecord, code: (command: string) => string = (command) => `\`${command}\``): string {
+  return record.finished
+    ? `${code(`dev task start ${record.id}`)} starts round ${record.round + 1}`
+    : `round ${record.round} isn't finished, so task-changes reviews it in this round`;
 }
 
 /** What needs attention, short, for one line per task in `dev task status`. */

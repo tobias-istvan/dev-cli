@@ -8,7 +8,7 @@ import { workspaceServiceContext } from "./context.ts";
 import { git, gitMaybe } from "./git.ts";
 import { loadConfig, type ProjectConfig } from "./project-config.ts";
 import { enabledServices } from "./scaffold.ts";
-import { readRecord, recordIds, recordNotes } from "./task-record.ts";
+import { readRecord, recordIds, recordNotes, reopenAdvice } from "./task-record.ts";
 import { basesFor, workspaceBase } from "./tasks.ts";
 import { baseRef, defaultBranch, inspectWorktrees, remoteName, isSafeToRemove, repositoryDir, worktreeDir, worktreeIds } from "./worktree.ts";
 
@@ -145,13 +145,13 @@ export async function buildSnapshot(root: string, config: ProjectConfig, registr
   const reopened: string[] = [];
   for (const id of await recordIds(root)) {
     const record = await readRecord(root, id);
-    if (record.reopened.length > 0) reopened.push(`[${id}](tasks/${id}/changes.md) (${record.reopened.join(", ")}): \`dev task start ${id}\` starts round ${record.round + 1}`);
+    if (record.reopened.length > 0) reopened.push(`[${id}](tasks/${id}/changes.md) (${record.reopened.join(", ")}): ${reopenAdvice(record)}`);
     else if (!worktrees.has(id)) {
       const fresh = record.logs.changes.byStatus.new ?? [];
       if (fresh.length > 0) changed.push(`[${id}](tasks/${id}/changes.md) (${fresh.join(", ")})`);
     }
   }
-  if (reopened.length > 0) lines.push(`Reopened after their PR merged: ${reopened.join("; ")}.`, "");
+  if (reopened.length > 0) lines.push(`Tickets reopened: ${reopened.join("; ")}.`, "");
   if (changed.length > 0) {
     lines.push(`Finished tasks whose sources changed: ${changed.join(", ")}. A ticket back in an open status may mean it was reopened; \`task-changes\` reviews them.`, "");
   }

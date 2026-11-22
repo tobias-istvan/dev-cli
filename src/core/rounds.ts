@@ -147,10 +147,10 @@ export function replan(text: string): string {
 
 /**
  * Ends round n of a task: its PR files move to history/<n>/, the verification plan starts
- * again, and the brief moves to round n + 1 on the new branch. Logs carry on. Returns what
+ * again, and the brief moves to round n + 1 on the new branch and base. Logs carry on. Returns what
  * was moved, relative to the task folder.
  */
-export async function startNextRound(root: string, id: string, next: { branch: string; reason: string }): Promise<{ round: number; moved: string[] }> {
+export async function startNextRound(root: string, id: string, next: { branch: string; base: string; reason: string }): Promise<{ round: number; moved: string[] }> {
   const dir = taskDir(root, id);
   const brief = await readBrief(root, id);
   if (!brief) throw new Error(`tasks/${id}/brief.md can't be read.`);
@@ -179,7 +179,7 @@ export async function startNextRound(root: string, id: string, next: { branch: s
     `# Round ${round}\n\n${facts.join("\n")}\n\nThis round's PR files, kept as they were. The task's top-level files describe the current round.\n`,
   );
 
-  await setBriefFields(root, id, { round: round + 1, branch: next.branch, pr: null, finished: null });
+  await setBriefFields(root, id, { round: round + 1, branch: next.branch, base: next.base, pr: null, finished: null });
   const progress = path.join(dir, "progress.md");
   if (existsSync(progress)) {
     const when = new Date().toLocaleDateString("en-CA");

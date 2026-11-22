@@ -15,12 +15,14 @@ import {
   branchName,
   copyLocalFiles,
   DEFAULT_BRANCH_PATTERN,
+  defaultBranch,
   ensureWorktree,
   fetchRemote,
   inspectWorktree,
   inspectWorktrees,
   isMergedAt,
   isSafeToRemove,
+  remoteName,
   removeWorktree,
   requireClone,
   slugify,
@@ -118,13 +120,20 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   const pattern = config.conventions.branch ?? DEFAULT_BRANCH_PATTERN;
   const round = await nextRound(root, config, registry, out, id);
   // A task resumed keeps the branch its brief records: from round 2 it has a suffix.
-  let branch = (await readBrief(root, id))?.branch ?? branchName(pattern, { type, id, slug: slugify(title) });
+  const brief = await readBrief(root, id);
+  let branch = brief?.branch ?? branchName(pattern, { type, id, slug: slugify(title) });
+  let base = options.base ?? config.conventions.base;
   if (round) {
     branch = `${branchName(pattern, { type, id, slug: slugify(title) })}-${round.number}`;
-    const started = await startNextRound(root, id, { branch, reason: round.reason });
+    base ??= await defaultBranch(repo);
+    // Everything git could refuse is checked first, so a round is never archived without its worktree.
+    await step(out, "Checking the new round's branch and base", () => checkNewBranch(repo, branch, base!, out));
+    const started = await startNextRound(root, id, { branch, base, reason: round.reason });
     out.info(`Round ${started.round}: ${round.reason}.${started.moved.length > 0 ? ` Moved ${started.moved.join(", ")} to tasks/${id}/history/${started.round - 1}/.` : ""}`);
   }
-  const worktree = await step(out, `Creating worktrees/${id}`, () => ensureWorktree(root, id, branch, options.base ?? config.conventions.base));
+  const worktree = await step(out, `Creating worktrees/${id}`, () => ensureWorktree(root, id, branch, base));
+  // A later round: started now, or started before and its worktree only now created.
+  const later = round !== null || (!worktree.existed && (brief?.round ?? 1) > 1);
   const copies = await copyLocalFiles(repo, worktree.path, config.conventions.worktreeFiles ?? []);
 
   const template = [".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md", "PULL_REQUEST_TEMPLATE.md"].find((f) => existsSync(path.join(repo, f))) ?? null;
@@ -138,10 +147,30 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
   }
   out.info(notes.length > 0 ? `Notes: wrote ${notes.join(", ")}` : `Notes: tasks/${id}/ already there and left as it was`);
   out.info(
-    round
+    later
       ? `\nDone: next, run the task-changes skill for ${id} to see what reopened it, then task-plan to update the plan. Nothing was pushed.`
       : `\nDone: next, run the task-understand skill for ${id} to fill in tasks/${id}/brief.md. Nothing was pushed.`,
   );
+}
+
+/**
+ * What would stop git creating a round's branch, checked before the round is archived: the
+ * branch already in the clone, or a base that can't be found. A branch of that name on the
+ * remote only gets a warning, since git would create the local one anyway.
+ */
+async function checkNewBranch(repo: string, branch: string, base: string, out: Output): Promise<void> {
+  if (await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])) {
+    throw new DevError(`The next round's branch, ${branch}, is already in the clone, so nothing was changed.`, `Delete it with "git -C repository branch -D ${branch}" if it's left over, or rename it, then run this again.`);
+  }
+  await fetchRemote(repo);
+  const ref = await baseRef(repo, base);
+  if (!(await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]))) {
+    throw new DevError(`The base ${base} isn't in the clone or on its remote, so nothing was changed.`, "Check --base or conventions.base in dev.yaml.");
+  }
+  const remote = await remoteName(repo);
+  if (remote && (await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${branch}`]))) {
+    out.warn(`${remote} already has a branch ${branch}: pushing the new round's work there would mix the two.`);
+  }
 }
 
 /**

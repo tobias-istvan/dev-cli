@@ -259,10 +259,10 @@ test("a task reopened after its PR merged starts its next round, keeping its log
   assert.equal(field(reopen, "Reopened"), "yes");
   assert.match(field(reopen, "Changed")!, /reopened: no longer done/);
   const status = dev(root, remote, ["task", "status", "TCK-1"]);
-  assert.match(status.out, new RegExp(`^Reopened \\(${reopen.id}\\): "dev task start TCK-1" starts round 2$`, "m"));
+  assert.match(status.out, new RegExp(`^Ticket reopened \\(${reopen.id}\\): "dev task start TCK-1" starts round 2$`, "m"));
   const snapshot = dev(root, remote, ["day", "start"]);
   assert.equal(snapshot.code, 0, snapshot.err);
-  assert.match(read(root, "snapshot.md"), new RegExp(`Reopened after their PR merged: \\[TCK-1\\]\\(tasks/TCK-1/changes\\.md\\) \\(${reopen.id}\\): \`dev task start TCK-1\` starts round 2\\.`));
+  assert.match(read(root, "snapshot.md"), new RegExp(`Tickets reopened: \\[TCK-1\\]\\(tasks/TCK-1/changes\\.md\\) \\(${reopen.id}\\): \`dev task start TCK-1\` starts round 2\\.`));
 
   const hook = spawnSync(process.execPath, [CLI, "hook", "session-start", "--tool", "claude"], {
     cwd: root,
@@ -270,7 +270,7 @@ test("a task reopened after its PR merged starts its next round, keeping its log
     input: JSON.stringify({ session_id: "s-1", cwd: root }),
     env: { ...process.env, XDG_CONFIG_HOME: path.join(base, "config"), DEV_EXTRA_PLUGINS: PLUGINS, DEV_RECORDED_REMOTE: remote, CLAUDE_PROJECT_DIR: root },
   });
-  assert.match(JSON.parse(hook.stdout).hookSpecificOutput.additionalContext, new RegExp(`Reopened after their PR merged: TCK-1 \\(${reopen.id}\\): \`dev task start TCK-1\` starts round 2\\.`));
+  assert.match(JSON.parse(hook.stdout).hookSpecificOutput.additionalContext, new RegExp(`Tickets reopened: TCK-1 \\(${reopen.id}\\): \`dev task start TCK-1\` starts round 2\\.`));
 
   // The round's PR files, as the skills would have left them.
   const task = path.join(root, "tasks", "TCK-1");
@@ -279,8 +279,25 @@ test("a task reopened after its PR merged starts its next round, keeping its log
   mkdirSync(path.join(task, "evidence"));
   writeFileSync(path.join(task, "evidence", "test.log"), "ok\n");
 
-  const second = dev(root, remote, ["task", "start", "TCK-1"]);
+  // What git would refuse is checked before anything moves: a left-over branch, a missing base.
+  const repo = path.join(root, "repository");
+  git(repo, "branch", `${branch}-2`, "main");
+  const taken = dev(root, remote, ["task", "start", "TCK-1"]);
+  assert.notEqual(taken.code, 0);
+  assert.match(taken.err, new RegExp(`The next round's branch, ${branch}-2, is already in the clone, so nothing was changed\\.`));
+  git(repo, "branch", "-D", `${branch}-2`);
+  const missing = dev(root, remote, ["task", "start", "TCK-1", "--base", "nope"]);
+  assert.notEqual(missing.code, 0);
+  assert.match(missing.err, /The base nope isn't in the clone or on its remote, so nothing was changed\./);
+  assert.ok(!existsSync(path.join(root, "tasks", "TCK-1", "history")));
+  assert.equal(brief(root, "TCK-1").round, 1);
+  assert.ok(existsSync(path.join(root, "tasks", "TCK-1", "pr-description.md")));
+
+  // Round 2 starts from another base, and the brief records it.
+  git(repo, "push", "--quiet", "origin", "main:develop");
+  const second = dev(root, remote, ["task", "start", "TCK-1", "--base", "develop"]);
   assert.equal(second.code, 0, second.err);
+  assert.equal(brief(root, "TCK-1").base, "develop");
   assert.match(second.out, new RegExp(`Round 2: its ticket was reopened \\(${reopen.id}\\)\\. Moved pr-description\\.md, verification\\.md, evidence to tasks/TCK-1/history/1/\\.`));
   assert.match(second.out, /run the task-changes skill for TCK-1/);
   assert.equal(git(path.join(root, "worktrees", "TCK-1"), "rev-parse", "--abbrev-ref", "HEAD"), `${branch}-2`);
@@ -328,4 +345,23 @@ test("a finished task watches its sources for conventions.watchDays after it fin
 
   writeFileSync(path.join(root, "dev.yaml"), read(root, "dev.yaml").replace("watchDays: 60", "watchDays: soon"));
   assert.match(dev(root, remote, ["doctor", "--offline"]).out, /"conventions\.watchDays" should be a number of days/);
+});
+
+test("a ticket reopened while its task is in progress is reviewed in the same round", () => {
+  const { root, remote } = setup();
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.equal(dev(root, remote, ["task", "start", "TCK-1"]).code, 0);
+  ticket(remote, { id: "TCK-1", title: "Sort the order list", updated: "2026-11-03T10:00:00Z", status: "Done", parent: "TCK-100" }, T1("- Sorted by date", ["**sam**: Looks right."]));
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  ticket(remote, { id: "TCK-1", title: "Sort the order list", updated: "2026-11-04T10:00:00Z", status: "In Progress", parent: "TCK-100" }, T1("- Sorted by date", ["**sam**: Looks right."]));
+  assert.equal(dev(root, remote, ["sync"]).code, 0);
+  assert.match(read(root, "tasks/TCK-1/changes.md"), /## C2 · recorded:tickets · new[\s\S]*- Reopened: yes/);
+
+  const status = dev(root, remote, ["task", "status", "TCK-1"]);
+  assert.match(status.out, /^Ticket reopened \(C2\): round 1 isn't finished, so task-changes reviews it in this round$/m);
+  assert.doesNotMatch(status.out, /starts round 2/);
+  const again = dev(root, remote, ["task", "start", "TCK-1"]);
+  assert.equal(again.code, 0, again.err);
+  assert.match(again.out, /already there and left as it was/);
+  assert.equal(brief(root, "TCK-1").round, 1);
 });

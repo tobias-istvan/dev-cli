@@ -20,10 +20,11 @@ Paths are from the workspace root: two folders up from a task's worktree.
    to `planned`.
 4. Mark each entry `reviewed`, with `Led to:` naming the findings and decisions it led to,
    or `nothing`.
-5. An entry with `Reopened: yes` is the task's ticket going from done back to open after
-   its PR merged. Tell the developer: `dev task start <id>` starts the next round, with a
-   new branch and worktree, and moves the last round's PR files to `history/<n>/`. Review
-   the entry like any other; new comments on a finished ticket may mean the same, so say so.
+5. An entry with `Reopened: yes` is the task's ticket going from done back to open. Tell
+   the developer. If the task is finished (`dev task status` says so), `dev task start <id>`
+   starts the next round, with a new branch and worktree, and moves the last round's PR
+   files to `history/<n>/`. If it isn't, the work goes on in this round. Review the entry
+   like any other; new comments on a finished ticket may mean the same, so say so.
 
 {{format:changes}}
 
