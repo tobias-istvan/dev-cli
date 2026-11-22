@@ -365,3 +365,23 @@ test("a ticket reopened while its task is in progress is reviewed in the same ro
   assert.match(again.out, /already there and left as it was/);
   assert.equal(brief(root, "TCK-1").round, 1);
 });
+
+test("a round whose branch git would reject is refused before anything moves", () => {
+  const { root, remote } = setup();
+  // A task id with "..", finished: any pattern gives a branch name git rejects.
+  const task = path.join(root, "tasks", "x..y");
+  mkdirSync(task, { recursive: true });
+  writeFileSync(path.join(task, "brief.md"), `---\nid: "x..y"\ntitle: "Odd"\nbranch: "feature/x..y-odd"\nbase: "main"\nround: 1\nfinished: "${today}"\n---\n\n# Odd\n`);
+  writeFileSync(path.join(task, "pr-description.md"), "Done.\n");
+  const start = dev(root, remote, ["task", "start", "x..y", "--title", "Odd"]);
+  assert.notEqual(start.code, 0);
+  assert.match(start.err, /The next round's branch, feature\/x\.\.y-odd-2, isn't a name git accepts, so nothing was changed\./);
+  assert.ok(!existsSync(path.join(task, "history")));
+  assert.ok(existsSync(path.join(task, "pr-description.md")));
+  assert.equal(brief(root, "x..y").round, 1);
+
+  // dev.yaml's pattern is checked before any task uses it.
+  writeFileSync(path.join(root, "dev.yaml"), `${read(root, "dev.yaml")}conventions:\n  branch: "feature/{id}..{slug}"\n`);
+  const doctor = dev(root, remote, ["doctor", "--offline"]);
+  assert.match(doctor.out, /"conventions\.branch" makes branch names git rejects, like "feature\/ABC-123\.\.sort-the-list"/);
+});

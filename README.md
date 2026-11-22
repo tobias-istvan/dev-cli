@@ -304,7 +304,7 @@ conventions:
 | `services[].scope` | What the service syncs. Its shape depends on the service; see [Services](#services) |
 | `services[].sync` | `full` or `referenced`. See [Syncing](#syncing) |
 | `services[].fetch` | `within-scope` or `anywhere`. See [The scope boundary](#the-scope-boundary) |
-| `conventions.branch` | Branch names for tasks. `{type}` is `feature`, `fix` or `chore`, from the item |
+| `conventions.branch` | Branch names for tasks. `{type}` is `feature`, `fix` or `chore`, from the item. `dev doctor` checks the names it makes are ones git accepts |
 | `conventions.base` | The branch tasks start from and merge into, for teams that merge into `develop` or a release branch. `dev task start --base` overrides it for one task |
 | `conventions.worktreeFiles` | Local-only files, like `.env.local`, copied into each new worktree. Only files git ignores are copied, so they can't be committed by accident |
 | `conventions.checks` | The repository's checks by name, like `test: npm test`. The task skills run them to plan and verify. Without it, they find the commands in the repository's `AGENTS.md`, scripts and CI config |
@@ -662,8 +662,8 @@ task still in progress, that's a change to review in the same round. For a finis
   `finished` are cleared.
 
 It won't start a round while the last one's worktree is still there: run
-`dev task cleanup --remove` first. Nothing moves if git couldn't create the branch: one of
-that name already in the clone, or a base that can't be found, stops it first.
+`dev task cleanup --remove` first. Nothing moves if git couldn't create the branch: a name git
+rejects, one already in the clone, or a base that can't be found stops it first.
 
 ### Checking in and cleaning up
 

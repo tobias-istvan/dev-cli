@@ -51,6 +51,17 @@ export function isBranchName(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(value) && !/\.\.|\/\/|\/$|\.lock$|\/\.|\.$/.test(value);
 }
 
+/** Whether git accepts a branch name, following git check-ref-format, so dev.yaml can be checked without a repository. */
+export function isValidBranch(name: string): boolean {
+  if (!name || name === "@" || name.startsWith("-") || name.endsWith("/") || name.endsWith(".")) return false;
+  if (/\.\.|@\{|\/\/|[\x00-\x20\x7f~^:?*[\\]/.test(name)) return false;
+  return name.split("/").every((part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+/** A pattern's branch for a sample task, to check the pattern before any task uses it. */
+const SAMPLE_BRANCH = (pattern: string) =>
+  pattern.replace(/\{type\}/g, "feature").replace(/\{id\}/g, "ABC-123").replace(/\{slug\}/g, "sort-the-list").replace(/\/{2,}/g, "/").replace(/^[/-]+|[/-]+$/g, "");
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -142,6 +153,8 @@ export function parseConfig(text: string): { config: ProjectConfig; problems: Pr
     } else if (data.conventions.branch !== undefined) {
       if (typeof data.conventions.branch !== "string" || !data.conventions.branch.includes("{id}")) {
         problems.push({ message: '"conventions.branch" should be text containing {id}, like "{type}/{id}-{slug}".' });
+      } else if (!isValidBranch(SAMPLE_BRANCH(data.conventions.branch))) {
+        problems.push({ message: `"conventions.branch" makes branch names git rejects, like "${SAMPLE_BRANCH(data.conventions.branch)}". Avoid "..", spaces, ~ ^ : ? * [ \\ and parts starting with a dot.` });
       } else {
         config.conventions.branch = data.conventions.branch;
       }

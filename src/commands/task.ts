@@ -154,11 +154,14 @@ export async function runTaskStart(registry: Registry, out: Output, ref: string,
 }
 
 /**
- * What would stop git creating a round's branch, checked before the round is archived: the
- * branch already in the clone, or a base that can't be found. A branch of that name on the
+ * What would stop git creating a round's branch, checked before the round is archived: a
+ * name git rejects, the branch already in the clone, or a base that can't be found. A branch of that name on the
  * remote only gets a warning, since git would create the local one anyway.
  */
 async function checkNewBranch(repo: string, branch: string, base: string, out: Output): Promise<void> {
+  if ((await gitMaybe(repo, ["check-ref-format", "--branch", branch])) === null) {
+    throw new DevError(`The next round's branch, ${branch}, isn't a name git accepts, so nothing was changed.`, "Check conventions.branch in dev.yaml.");
+  }
   if (await gitMaybe(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])) {
     throw new DevError(`The next round's branch, ${branch}, is already in the clone, so nothing was changed.`, `Delete it with "git -C repository branch -D ${branch}" if it's left over, or rename it, then run this again.`);
   }
