@@ -25,7 +25,9 @@ if your tool has them, otherwise in a new session. Record what you find; don't f
    `failed` with what happened, or `needs-person` with what the developer should look at,
    when only a person can judge it. Save screenshots, logs and test output in
    `tasks/<id>/evidence/` and link them from `Evidence`.
-5. A criterion with no entry: add one and check it.
+5. A criterion with no entry: add one and check it. From round 2, every entry starts as
+   `planned` again: check them all, not only the new ones. The last round's results are in
+   `tasks/<id>/history/<n>/verification.md`.
 6. A problem no criterion covers: a finding, or a follow-up if it isn't this task's.
 
 {{format:verification}}

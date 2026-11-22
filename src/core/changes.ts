@@ -10,6 +10,8 @@ import { serviceFiles } from "./indexes.ts";
 import type { ProjectConfig } from "./project-config.ts";
 import { CHANGES, logHeader, nextNumber, renderEntry } from "./record.ts";
 import { enabledServices } from "./scaffold.ts";
+import { workspaceServiceContext } from "./context.ts";
+import { watching } from "./rounds.ts";
 
 /**
  * Source changes: what a sync changed in the synced items, and which tasks it affects.
@@ -34,6 +36,8 @@ export interface ItemState {
   sections: Record<string, string>;
   /** From a "Comments (N)" heading, which every task source writes. */
   comments?: number;
+  /** Whether its task source counts it as done, for a task item. */
+  done?: boolean;
 }
 
 interface Baseline {
@@ -53,6 +57,8 @@ export interface Change {
   details: string[];
   /** The tasks it affects. */
   tasks: string[];
+  /** For a ticket that went from done back to open, the tasks it's the ticket of: each is reopened. */
+  reopens: string[];
 }
 
 export interface ChangeResult {
@@ -62,6 +68,7 @@ export interface ChangeResult {
 }
 
 const VERSION = 1;
+const REOPENED = "reopened: no longer done";
 /** Compared whether or not `updated` moved: they change without the source changing. */
 const ALWAYS = new Set(["inScope", "via", "gone"]);
 const SKIPPED = new Set(["synced", "updated"]);
@@ -175,6 +182,23 @@ function scan(root: string, config: ProjectConfig, registry: Registry): Map<stri
   return items;
 }
 
+/** Which task items their task source counts as done, from the local files, so a reopen can be seen. */
+async function markDone(root: string, config: ProjectConfig, registry: Registry, items: Map<string, Scanned>): Promise<void> {
+  const byFile = new Map([...items.values()].map((item) => [item.state.file, item]));
+  const quiet = { info: () => {}, warn: () => {}, progress: () => {} };
+  for (const entry of enabledServices(config, registry)) {
+    if (!entry.service.tasks) continue;
+    try {
+      for (const task of await entry.service.tasks.list(workspaceServiceContext(root, entry, config, registry, quiet))) {
+        const item = byFile.get(task.file);
+        if (item) item.state.done = task.done;
+      }
+    } catch {
+      // Without it, reopens of this service's tickets go unseen; nothing else changes.
+    }
+  }
+}
+
 function show(value: unknown): string {
   if (value === undefined || value === null || value === "") return "none";
   const text = Array.isArray(value) ? value.map((v) => String(v)).join(", ") : typeof value === "object" ? JSON.stringify(value) : String(value);
@@ -193,6 +217,7 @@ export function compareItem(before: ItemState, after: ItemState): string[] {
   if (!same(before.fields.inScope, after.fields.inScope)) details.push(after.fields.inScope === false ? "left the scope" : "came into the scope");
   if (after.fields.gone === true && before.fields.gone !== true) details.push("deleted in the service");
   else if (before.fields.gone === true && after.fields.gone !== true) details.push("back in the service");
+  if (before.done === true && after.done === false) details.push(REOPENED);
   if ((after.comments ?? 0) > (before.comments ?? 0)) {
     const added = (after.comments ?? 0) - (before.comments ?? 0);
     details.push(`${added} comment${added === 1 ? "" : "s"} added`);
@@ -235,7 +260,7 @@ function briefSources(text: string): { files: string[]; id: string | null } {
  * `sources:`), the item with the task's own id, and one step further from those: their
  * parent, their `links`, and what their bodies link to locally.
  */
-function taskSources(root: string, items: Map<string, Scanned>, previous: Record<string, ItemState>): Map<string, Set<string>> {
+function taskSources(root: string, config: ProjectConfig, items: Map<string, Scanned>, previous: Record<string, ItemState>): Map<string, { sources: Set<string>; own: Set<string> }> {
   const byFile = new Map<string, string>();
   for (const [key, state] of Object.entries(previous)) byFile.set(state.file, key);
   for (const [key, item] of items) byFile.set(item.state.file, key);
@@ -249,7 +274,7 @@ function taskSources(root: string, items: Map<string, Scanned>, previous: Record
   for (const [key, state] of Object.entries(previous)) index(key, state);
   for (const [key, item] of items) index(key, item.state);
 
-  const result = new Map<string, Set<string>>();
+  const result = new Map<string, { sources: Set<string>; own: Set<string> }>();
   const tasks = safePath(root, "tasks");
   let ids: string[] = [];
   try {
@@ -264,13 +289,16 @@ function taskSources(root: string, items: Map<string, Scanned>, previous: Record
     } catch {
       continue;
     }
+    // A finished task stops watching its sources once the window after its PR merged is over.
+    if (!watching(brief, config)) continue;
     const { files, id } = briefSources(brief);
     const seeds = new Set<string>();
     for (const file of files) {
       const key = byFile.get(file);
       if (key) seeds.add(key);
     }
-    for (const key of byId.get(id ?? task) ?? []) seeds.add(key);
+    const own = new Set(byId.get(id ?? task) ?? []);
+    for (const key of own) seeds.add(key);
 
     const sources = new Set(seeds);
     for (const key of seeds) {
@@ -292,7 +320,7 @@ function taskSources(root: string, items: Map<string, Scanned>, previous: Record
         if (other) sources.add(other);
       }
     }
-    result.set(task, sources);
+    result.set(task, { sources, own });
   }
   return result;
 }
@@ -352,6 +380,7 @@ async function writeTaskEntries(root: string, date: string, changes: Change[]): 
           ["Changed", change.details.join("; ")],
           ["Report", `[${report}](${relativeLink(relative, report)})`],
           ["Recorded", `${date} ${time()}`],
+          ...(change.reopens.includes(task) ? [["Reopened", "yes"] as [string, string]] : []),
         ],
         text: `${change.id} · ${show(change.title)}`,
       }));
@@ -369,6 +398,7 @@ async function writeTaskEntries(root: string, date: string, changes: Change[]): 
  */
 export async function recordChanges(root: string, config: ProjectConfig, registry: Registry, label: string): Promise<ChangeResult> {
   const items = scan(root, config, registry);
+  await markDone(root, config, registry, items);
   const baseline = readBaseline(root);
   const save = () => {
     const next: Baseline = { version: VERSION, synced: new Date().toISOString(), items: Object.fromEntries([...items].map(([key, item]) => [key, item.state])) };
@@ -381,7 +411,7 @@ export async function recordChanges(root: string, config: ProjectConfig, registr
 
   const changes: Change[] = [];
   const describe = (key: string, state: ItemState, details: string[]) =>
-    changes.push({ key, service: String(state.fields.service), id: String(state.fields.id), title: String(state.fields.title ?? ""), file: state.file, details, tasks: [] });
+    changes.push({ key, service: String(state.fields.service), id: String(state.fields.id), title: String(state.fields.title ?? ""), file: state.file, details, tasks: [], reopens: [] });
   for (const [key, item] of items) {
     const before = baseline.items[key];
     if (!before) describe(key, item.state, [item.state.fields.inScope === false ? "added, as context" : "added"]);
@@ -396,8 +426,11 @@ export async function recordChanges(root: string, config: ProjectConfig, registr
 
   let report: string | null = null;
   if (changes.length > 0) {
-    const sources = taskSources(root, items, baseline.items);
-    for (const change of changes) change.tasks = [...sources].filter(([, keys]) => keys.has(change.key)).map(([task]) => task).sort();
+    const sources = taskSources(root, config, items, baseline.items);
+    for (const change of changes) {
+      change.tasks = [...sources].filter(([, task]) => task.sources.has(change.key)).map(([task]) => task).sort();
+      if (change.details.includes(REOPENED)) change.reopens = [...sources].filter(([, task]) => task.own.has(change.key)).map(([task]) => task);
+    }
     changes.sort((a, b) => a.service.localeCompare(b.service) || a.id.localeCompare(b.id, undefined, { numeric: true }));
     const date = today();
     const entries = await writeTaskEntries(root, date, changes);

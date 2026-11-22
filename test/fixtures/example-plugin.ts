@@ -1,11 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { gitClone } from "../../src/core/run.ts";
-import type { Plugin } from "../../src/plugins/types.ts";
+import type { ChangeRequest, Plugin } from "../../src/plugins/types.ts";
 
 /**
  * A plugin for tests: "example" offers a versioning service and two connected
- * services, and never reaches the network. A login is valid when its token is "good".
+ * services, and never reaches the network. DEV_EXAMPLE_PRS stands in for its pull requests. A login is valid when its token is "good".
  */
 const plugin: Plugin = {
   name: "example",
@@ -34,6 +34,8 @@ const plugin: Plugin = {
         listRepositories: async () => [{ id: "acme/web" }],
         cloneUrl: (repository) => `https://example.test/${repository}.git`,
         clone: (_context, _credentials, repository, target, url) => gitClone(url ?? `https://example.test/${repository}.git`, target),
+        // DEV_EXAMPLE_PRS: the pull requests for each branch, as JSON, newest first.
+        changeRequests: async (_context, _credentials, _repository, branch) => (JSON.parse(process.env.DEV_EXAMPLE_PRS ?? "{}") as Record<string, ChangeRequest[]>)[branch] ?? [],
       },
     },
     {

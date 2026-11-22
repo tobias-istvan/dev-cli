@@ -33,6 +33,10 @@ export interface TaskRecord {
   brief: boolean;
   round: number;
   pr: number | null;
+  /** The day the round's PR merged, from the brief. */
+  finished: string | null;
+  /** Unreviewed changes that reopened the task's ticket. Once the task is finished, `dev task start` starts the next round. */
+  reopened: string[];
   /** The brief's `sources:`. */
   sources: string[];
   logs: { findings: LogState; decisions: LogState; verification: LogState; changes: LogState; followUps: LogState };
@@ -69,6 +73,8 @@ export async function readRecord(root: string, id: string): Promise<TaskRecord> 
     brief: false,
     round: 1,
     pr: null,
+    finished: null,
+    reopened: [],
     sources: [],
     logs: Object.fromEntries([...KEYS].map(([format, key]) => [key, { file: relative(format.file), exists: false, byStatus: {} }])) as TaskRecord["logs"],
     blocking: [],
@@ -93,6 +99,11 @@ export async function readRecord(root: string, id: string): Promise<TaskRecord> 
     if (data.pr !== undefined && data.pr !== null) {
       if (Number.isInteger(data.pr) && (data.pr as number) >= 1) record.pr = data.pr as number;
       else warn(`pr is ${JSON.stringify(data.pr)}, not a pull or merge request number`);
+    }
+    if (data.finished !== undefined && data.finished !== null) {
+      const finished = data.finished instanceof Date ? data.finished.toISOString().slice(0, 10) : String(data.finished);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(finished)) record.finished = finished;
+      else warn(`finished is ${JSON.stringify(data.finished)}, not a date like 2026-11-20`);
     }
     if (data.sources !== undefined && data.sources !== null) {
       if (Array.isArray(data.sources) && data.sources.every((s) => typeof s === "string")) record.sources = data.sources as string[];
@@ -140,8 +151,9 @@ export async function readRecord(root: string, id: string): Promise<TaskRecord> 
     }
   }
   for (const [format, list] of parsed) {
-    if (format !== FINDINGS) continue;
+    if (format !== FINDINGS && format !== CHANGES) continue;
     for (const entry of list) {
+      if (entry.status === "new" && field(entry, "Reopened")?.toLowerCase() === "yes") record.reopened.push(entry.id);
       if (entry.status === "open" && field(entry, "Blocks")?.toLowerCase() === "yes") record.blocking.push(entry.id);
       if (entry.status === "assumed" && !resolved.has(entry.id)) {
         warnings.push({ file: relative(FINDINGS.file), line: entry.line, message: `${entry.id} is assumed, but no decision resolves it to state the assumption` });
@@ -173,8 +185,9 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function describeRecord(record: TaskRecord): string[] {
   const lines: string[] = [];
   const { findings, decisions, verification, changes, followUps } = record.logs;
-  if (record.brief) lines.push(`Round ${record.round}${record.pr ? ` · PR #${record.pr}` : ""}`);
+  if (record.brief) lines.push(`Round ${record.round}${record.pr ? ` · PR #${record.pr}${record.finished ? `, merged ${record.finished}` : ""}` : ""}`);
   else lines.push(record.exists ? "No brief.md" : `No tasks/${record.id}/`);
+  if (record.reopened.length > 0) lines.push(`Ticket reopened${ids(record.reopened)}: ${reopenAdvice(record, (command) => `"${command}"`)}`);
 
   if (findings.exists) {
     const open = findings.byStatus.open ?? [];
@@ -221,10 +234,21 @@ export function describeRecord(record: TaskRecord): string[] {
   return lines;
 }
 
+/**
+ * What to do about a reopened ticket: a finished task starts its next round; one still in
+ * progress only reviews the change, since its round isn't over.
+ */
+export function reopenAdvice(record: TaskRecord, code: (command: string) => string = (command) => `\`${command}\``): string {
+  return record.finished
+    ? `${code(`dev task start ${record.id}`)} starts round ${record.round + 1}`
+    : `round ${record.round} isn't finished, so task-changes reviews it in this round`;
+}
+
 /** What needs attention, short, for one line per task in `dev task status`. */
 export function recordNotes(record: TaskRecord): string[] {
   const notes: string[] = [];
   if (record.round > 1) notes.push(`round ${record.round}`);
+  if (record.reopened.length > 0) notes.push("reopened");
   if (record.blocking.length > 0) notes.push(`${record.blocking.length} blocking`);
   const fresh = record.logs.changes.byStatus.new?.length ?? 0;
   if (fresh > 0) notes.push(`${plural(fresh, "change")} to review`);

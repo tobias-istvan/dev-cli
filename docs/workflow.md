@@ -6,7 +6,7 @@ with everything recorded in the workspace so anyone can pick it up later.
 [design.md](design.md) covers what exists: the workspace, plugins, syncing and the command
 check. This document covers what comes next, on top of it.
 
-Status: agreed, not built. The build order is at the end.
+Status: built in 0.4. The build order is at the end.
 
 ## The problem
 
@@ -124,12 +124,15 @@ base: "main"                   # recorded since 0.4; status and cleanup compare 
 worktree: "worktrees/ABC-123"
 round: 1
 pr: 42
+finished: "2026-11-20"         # the day the PR merged; set by dev
 sources:                       # only what the link graph can't find; see below
   - confluence/DOCS/Ordering/index.md
 ---
 ```
 
-`pr` is filled in by dev once it finds the task's pull or merge request.
+`pr` is filled in by dev once it finds the task's pull or merge request, and `finished` once
+that merged: in `dev task status <id>`, `dev day start` and `dev task cleanup`. A task
+cleaned up with no merged PR found is finished the day its worktree was removed.
 
 ## Rounds
 
@@ -145,12 +148,14 @@ after its PR was merged, the task gets a new round instead of a new folder:
 - **A new branch and worktree with a suffix**, like `feature/ABC-123-sort-the-order-list-2`.
 - **Agents read the top-level files**, which always describe the current round.
 
-`dev task start` on a task whose PR is merged starts the next round. A task with one PR
-never sees any of this.
+`dev task start` on a finished task starts the next round, once the last round's worktree is
+removed. The round's files go to `history/<n>/` with a `README.md` naming its PR, merge date
+and branch. A task with one PR never sees any of this.
 
-A reopen is noticed as a source change: the ticket moves from a done status back to an open
-one, or gets new comments, while the task's PR is merged. The sync records it, and the
-snapshot and session start say so.
+A reopen is noticed as a source change: the task's own ticket goes from done back to open.
+Each task source already says which of its items are done; the sync keeps that in its
+baseline, and marks the task's entry `Reopened: yes`. The snapshot and session start say so.
+New comments on a finished ticket are recorded as a change, not as a reopen.
 
 ## Source changes
 
@@ -200,8 +205,9 @@ the link graph can't see. Agents add to it when they find a source that matters;
 empty.
 
 A change to any of a task's sources is added to that task's `changes.md` as a `new` entry,
-for every task folder, finished ones included. A change to a finished task's ticket is how a
-reopen shows up.
+for every task folder, finished ones included for `conventions.watchDays` (30 by default)
+after their `finished` date. After that, the day's change report still lists the change. A
+change to a finished task's ticket is how a reopen shows up.
 
 ### Picking it up
 
@@ -284,11 +290,12 @@ Each step is useful on its own.
 3. **Skills** (built in 0.4). `task-understand`, then `task-plan` with the verification plan, then
    `task-verify`, then `task-changes`. `task-build` and `task-handover` last. The
    session-start hook and snapshot lines arrive with them.
-4. **Rounds.** Finding the task's PR, reopen detection, `history/<n>/`, and the round in
-   `dev task start`.
+4. **Rounds** (built in 0.4). Finding the task's PR, reopen detection, `history/<n>/`, and
+   the round in `dev task start`.
 
-## Open questions
+## Decided
 
-- **Which finished tasks keep watching their sources.** All of them forever, or until some
-  time after their PR merged.
-- **How long change reports are kept.** They're small, but every sync adds to one.
+- **Which finished tasks keep watching their sources:** each for `conventions.watchDays`
+  after it finished, 30 by default.
+- **How long change reports are kept:** indefinitely. They're small, and they're the
+  record of why work changed.

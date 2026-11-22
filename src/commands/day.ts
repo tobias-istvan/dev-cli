@@ -9,7 +9,8 @@ import { DevError } from "../core/output.ts";
 import { step } from "../core/progress.ts";
 import { describeRefresh, markRefresh, refreshState, snapshotTime, time } from "../core/refresh.ts";
 import { enabledServices } from "../core/scaffold.ts";
-import { repositoryDir } from "../core/worktree.ts";
+import { findTaskPrs, readBrief } from "../core/rounds.ts";
+import { repositoryDir, worktreeIds } from "../core/worktree.ts";
 import { requireWorkspaceRoot } from "../core/workspace.ts";
 import { syncServices } from "./sync.ts";
 
@@ -46,6 +47,16 @@ async function refresh(root: string, config: ProjectConfig, registry: Registry, 
       } catch (error) {
         ok = false;
         out.warn(`Code: couldn't update. ${(error as Error).message}`);
+      }
+    }
+    // Before the sync, so a task whose PR merged has its watch window from the start.
+    if (config.versioning) {
+      const open: string[] = [];
+      for (const id of await worktreeIds(root)) if ((await readBrief(root, id))?.finished === null) open.push(id);
+      if (open.length > 0) {
+        const found = await step(out, "Looking for the tasks' pull requests", () => findTaskPrs(root, config, registry, out, open));
+        if (found.updated.length > 0) out.info(`Pull requests: recorded in the brief of ${found.updated.join(", ")}.`);
+        if (found.failed) out.warn(`Pull requests: couldn't look them up. ${found.failed}`);
       }
     }
     ok = (await syncServices(root, config, registry, out, enabledServices(config, registry), { referenced: options.referenced })) && ok;

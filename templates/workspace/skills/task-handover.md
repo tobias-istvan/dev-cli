@@ -16,7 +16,9 @@ Paths are from the workspace root: two folders up from a task's worktree.
    `repository/.github/PULL_REQUEST_TEMPLATE.md`, with the same headings. Otherwise say
    what changed and why, and how it was tested, linking the evidence where it helps.
    `dev task diff <id> --stat` lists what changed. Leave
-   any checkboxes unticked: they're the author's own statements.
+   any checkboxes unticked: they're the author's own statements. From round 2, say what
+   this PR changes since the last one: the earlier description is in
+   `tasks/<id>/history/<n>/pr-description.md`, and why it's back is in `changes.md`.
 3. For each `noted` follow-up, draft the issue in its free text so it can be filed as
    written: a title, what's wrong and where, and "Found while working on <id>".
 4. For each open finding someone else has to answer, check its drafted question is still
