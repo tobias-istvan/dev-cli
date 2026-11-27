@@ -96,8 +96,8 @@ dev init ~/work/web
    GitLab Issues or GitHub Projects. Each asks for its own login and what to sync, its
    *scope*.
 
-It then writes `dev.yaml`, the agent files and the hooks, and clones the code into
-`repository/`. It never commits or pushes, and it's safe to run again: it keeps what
+It then writes `dev.yaml`, the agent files and the hooks, creates `INSTRUCTIONS.md` for your
+own instructions to agents, and clones the code into `repository/`. It never commits or pushes, and it's safe to run again: it keeps what
 `dev.yaml` says, offers what's missing, and never overwrites a file you've edited.
 
 `init` draws its questions with [ink](https://github.com/vadimdemedes/ink),
@@ -123,7 +123,8 @@ dev doctor
 ```
 
 `doctor` checks `dev.yaml`, every scope, every login (with the service itself, unless you
-pass `--offline`), and the generated files, and says how to fix each problem. It also warns
+pass `--offline`), and the generated files, and says how to fix each problem. It mentions an
+`INSTRUCTIONS.md` with nothing in it yet, but never fails because of one. It also warns
 about task record entries that don't follow the format; those never fail it.
 
 ### 3. Start the day
@@ -200,6 +201,7 @@ them or widen the scope. See [The scope boundary](#the-scope-boundary).
 web/
   dev.yaml                 the project config, committed
   AGENTS.md, CLAUDE.md     instructions for agents, generated
+  INSTRUCTIONS.md          your own instructions for agents, never touched by dev
   snapshot.md              what to work on, rewritten by dev day start
   repository/              the code (not committed)
   worktrees/<task>/        one checkout per task or review (not committed)
@@ -251,9 +253,16 @@ read the index, then open only the files they need. `dev index` rebuilds them fr
 
 - **Synced files are rewritten by every sync.** Don't edit them; add notes next to them. A
   Jira ticket's folder can hold your `research.md` or images beside `ticket.md`.
+- **`INSTRUCTIONS.md` is your own instructions for agents**: a house style, checks to always
+  run, how to answer. `dev init` creates a short stub once, and dev never changes, recreates or
+  removes it after that. `AGENTS.md` tells agents to read it, and `CLAUDE.md` imports it, so
+  Claude Code loads it on its own. It adds to `AGENTS.md`, but never overrides its safety rules
+  or the command check. Put your instructions here rather than in a generated file, so dev
+  keeps those up to date.
 - **Generated files** (`AGENTS.md`, `CLAUDE.md`, skills, hooks, MCP config, service docs) are
   updated by `dev files`, `dev add` and `dev remove`, but only while they're as dev wrote them.
-  Edit one and dev leaves it alone, and says so. Its lines in `.gitignore` sit in a marked
+  Edit one and dev leaves it alone, and says so. To move your edits out of `AGENTS.md` or
+  `CLAUDE.md`, put them in `INSTRUCTIONS.md`, delete the file, and run `dev files`. Its lines in `.gitignore` sit in a marked
   block; your own lines are kept.
 - **`tasks/`, reviews and day summaries are yours.** Nothing ever overwrites or removes them.
 
@@ -827,7 +836,8 @@ snapshot and the next session start from your Next steps.
 | File | What it gives agents |
 | --- | --- |
 | `AGENTS.md` | The layout, the rules, every command, and each service's rules |
-| `CLAUDE.md`, `.github/copilot-instructions.md` | Pointers to `AGENTS.md`, for tools that don't read it themselves |
+| `CLAUDE.md`, `.github/copilot-instructions.md` | Pointers to `AGENTS.md`, for tools that don't read it themselves. `CLAUDE.md` also imports `INSTRUCTIONS.md` |
+| `INSTRUCTIONS.md` | Your own instructions, read after `AGENTS.md`. Created once by `dev init`, never by `dev files` |
 | Skills in `.github/skills/`, `.claude/skills/`, `.agents/skills/` | Short guides: the CLI, each phase of a task, PR or MR review, reading Figma designs |
 | `docs/jira.md`, `docs/confluence.md` | How each service's files are laid out, and what the Why column means |
 | `.mcp.json`, `.vscode/mcp.json` | The Figma desktop app's local MCP server |
@@ -853,7 +863,10 @@ In **Copilot CLI** and **Claude Code**, hooks run on their own:
 The hooks are guarded: on a machine without dev, they do nothing. Other tools can run
 `dev day start` and `dev day end` by hand and lose nothing but the automatic context.
 Worktrees get copies of the skills, hooks and MCP config, so agents opened there have them
-too. Git ignores the copies. `dev files`, `dev add` and `dev remove` bring them up to date,
+too. Git ignores the copies. Their instructions point to the workspace's `AGENTS.md` and
+`INSTRUCTIONS.md`. Claude Code started in a worktree finds the workspace's `CLAUDE.md`, but asks
+once before following its import from there, so the session-start hook also names
+`INSTRUCTIONS.md` whenever it has instructions in it. `dev files`, `dev add` and `dev remove` bring them up to date,
 and remove a copy whose source is gone, like a removed service's skill. They only touch
 copies still as dev wrote them, never a file the branch tracks; edit the workspace's own
 files, not the copies.
@@ -870,7 +883,7 @@ it understands and decides **allow**, **ask** (the tool asks you) or **deny**:
 | --- | --- | --- |
 | `read` | `gh pr view`, `gh pr diff`, `glab mr list`, `gh api` GET requests, `dev jira pull` | allow |
 | `change` | `gh pr merge`, `gh pr comment`, `glab mr note`, `gh api -X POST`, a GraphQL mutation | ask |
-| `config` | `dev add`, `dev remove`, `dev login`, changing a scope, any edit to `dev.yaml` or to `~/.config/dev/` | ask |
+| `config` | `dev add`, `dev remove`, `dev login`, changing a scope, any edit to `dev.yaml`, `INSTRUCTIONS.md` or `~/.config/dev/` | ask |
 | `unknown` | gh inside `$(…)`, through `bash -c` it can't follow, an unknown extension | ask |
 
 - Commands dev doesn't know, like `ls` or `npm test`, get no answer: your tool decides as usual.

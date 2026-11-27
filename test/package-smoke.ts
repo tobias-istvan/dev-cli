@@ -18,6 +18,7 @@ try {
   const workspace = path.join(temp, "workspace");
   execFileSync(process.execPath, [path.join(installed, "dist/cli.js"), "init", workspace, "--versioning", "example:code", "--repo", "acme/web", "--no-clone"], { env, timeout: 30_000 });
   assert.match(readFileSync(path.join(workspace, "AGENTS.md"), "utf8"), /acme\/web/);
+  assert.match(readFileSync(path.join(workspace, "INSTRUCTIONS.md"), "utf8"), /^# Instructions/);
   assert.ok(JSON.parse(readFileSync(path.join(workspace, ".claude/settings.json"), "utf8")).hooks.PreToolUse);
   console.log("Packed CLI installation, version, init, templates and hook generation passed.");
 } finally { rmSync(temp, { recursive: true, force: true }); }

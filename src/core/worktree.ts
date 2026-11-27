@@ -93,8 +93,9 @@ applyTo: "**"
 
 # This is a task worktree inside a dev workspace
 
-The workspace root is two folders up. Read \`../../AGENTS.md\` before working here, and
-the task's notes in \`../../tasks/<this folder's name>/\`.
+The workspace root is two folders up. Read \`../../AGENTS.md\` before working here, then
+\`../../INSTRUCTIONS.md\` if it exists: the workspace's own instructions. Read the task's
+notes in \`../../tasks/<this folder's name>/\`.
 For pr-N or mr-N reviews, use ../../pull-requests/N/ or ../../merge-requests/N/ instead.
 
 Never push and never open a pull request from here unless the person asks you to.
