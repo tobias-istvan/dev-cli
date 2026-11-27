@@ -52,6 +52,7 @@ but tracks work in Jira enables only `github:github` (its versioning service) an
 my-workspace/
   dev.yaml                  project config, committed
   AGENTS.md, CLAUDE.md      generated agent instructions
+  INSTRUCTIONS.md           the person's own agent instructions, never written by dev
   .github/, .claude/, .agents/   hooks, skills and MCP entries for each tool
   docs/                     core docs plus each service's docs
   snapshot.md               what to work on, rebuilt by day start
@@ -190,6 +191,12 @@ wrote it is updated; a file someone edited is left alone and listed; a file that
 applies is removed only if nobody edited it. `.gitignore` keeps every line outside dev's
 block.
 
+`INSTRUCTIONS.md` is not a generated file. It holds the person's or team's own instructions,
+so editing them never stops dev updating `AGENTS.md`, which points to it, or `CLAUDE.md`,
+which imports it. `dev init` creates a commented stub once and records it in
+`.dev/yours.json`; after that dev never writes, recreates or removes it. It isn't in
+`.dev/generated.json`, so the clean-up of files that no longer apply can't reach it.
+
 ## Commands
 
 | Command | Does |
@@ -273,7 +280,8 @@ tool. Plugins' own `dev` subcommands are covered the same way, from their read o
 marks.
 
 Changing the workspace's config is its own kind, `config`: `dev add`, `remove`, `login`,
-`logout`, changing a scope, and any edit to `dev.yaml` or the dev settings folder, whether
+`logout`, changing a scope, and any edit to `dev.yaml`, the workspace's `INSTRUCTIONS.md` or
+the dev settings folder, whether
 through a shell command or a file-editing tool. The hooks cover both. It asks by default,
 and a team can set it to `deny` so agents can't widen what they're allowed to read.
 

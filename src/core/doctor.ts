@@ -7,6 +7,7 @@ import { pluginContext, serviceContext } from "./context.ts";
 import { step } from "./progress.ts";
 import { loadCredentials, looseWarning } from "./credentials.ts";
 import { configPath, parseConfig } from "./project-config.ts";
+import { INSTRUCTIONS_FILE, instructionsState } from "./instructions.ts";
 import { type CommandRow, generatedFiles } from "./scaffold.ts";
 import { readRecord, recordIds } from "./task-record.ts";
 import { CONFIG_FILE } from "./workspace.ts";
@@ -26,6 +27,13 @@ export interface DoctorReport {
   notes: string[];
   /** Malformed task record entries: worth fixing, never a failure. */
   warnings: string[];
+}
+
+/** What doctor says about a generated file someone edited by hand. */
+function editedNote(relative: string): string {
+  const note = `${relative} was edited by hand, so dev leaves it alone.`;
+  if (relative !== "AGENTS.md" && relative !== "CLAUDE.md") return note;
+  return `${note} To get dev's updates again, move your additions to ${INSTRUCTIONS_FILE}, delete ${relative} and run "dev files".`;
 }
 
 export async function doctor(root: string, registry: Registry, out: Output, options: DoctorOptions): Promise<DoctorReport> {
@@ -118,8 +126,17 @@ export async function doctor(root: string, registry: Registry, out: Output, opti
     }
     const current = createHash("sha256").update(readFileSync(file, "utf8")).digest("hex");
     if (current === createHash("sha256").update(content).digest("hex")) continue;
-    if (record[relative] === current) stale.push(relative);
-    else notes.push(`${relative} was edited by hand, so dev leaves it alone.`);
+    if (record[relative] === current) {
+      stale.push(relative);
+      continue;
+    }
+    notes.push(editedNote(relative));
+  }
+
+  // The workspace's own instructions: never a problem, only worth a mention.
+  const instructions = instructionsState(root);
+  if (instructions === "empty" || instructions === "stub") {
+    notes.push(`${INSTRUCTIONS_FILE} has no instructions in it yet. Add your own there: agents read it after AGENTS.md.`);
   }
   if (stale.length > 0) {
     problems.push({ message: `Generated files are missing or out of date: ${stale.join(", ")}.`, fix: 'Run "dev files".' });

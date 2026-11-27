@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -153,6 +153,37 @@ test("init is safe to run again, and keeps what dev.yaml says", () => {
   const other = dev(root, ["init", "--repo", "acme/other", "--no-clone"], { DEV_EXAMPLE_TOKEN: "good" });
   assert.equal(other.code, 1);
   assert.match(other.err, /This workspace is for acme\/web/);
+});
+
+test("init creates INSTRUCTIONS.md once, as the person's file, and never again", () => {
+  const root = folder();
+  const first = dev(root, ["init", ...EXAMPLE, "--no-clone"], { DEV_EXAMPLE_TOKEN: "good" });
+  assert.equal(first.code, 0, first.err);
+  assert.match(first.out, /Created INSTRUCTIONS\.md/);
+  assert.match(readFileSync(path.join(root, "INSTRUCTIONS.md"), "utf8"), /^# Instructions\n\n<!--/);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, ".dev", "yours.json"), "utf8")), { files: ["INSTRUCTIONS.md"] });
+  assert.ok(!("INSTRUCTIONS.md" in JSON.parse(readFileSync(path.join(root, ".dev", "generated.json"), "utf8"))), "it isn't a generated file");
+
+  // Deleted by the person: init leaves it deleted.
+  rmSync(path.join(root, "INSTRUCTIONS.md"));
+  const again = dev(root, ["init", "--no-clone"], { DEV_EXAMPLE_TOKEN: "good" });
+  assert.equal(again.code, 0, again.err);
+  assert.doesNotMatch(again.out, /INSTRUCTIONS/);
+  assert.ok(!existsSync(path.join(root, "INSTRUCTIONS.md")));
+
+  // One that was there before init is kept as it is, and so is a symlink.
+  const mine = folder();
+  writeFileSync(path.join(mine, "INSTRUCTIONS.md"), "Answer in British English.\n");
+  assert.equal(dev(mine, ["init", ...EXAMPLE, "--no-clone"], { DEV_EXAMPLE_TOKEN: "good" }).code, 0);
+  assert.equal(readFileSync(path.join(mine, "INSTRUCTIONS.md"), "utf8"), "Answer in British English.\n");
+  assert.deepEqual(JSON.parse(readFileSync(path.join(mine, ".dev", "yours.json"), "utf8")), { files: ["INSTRUCTIONS.md"] });
+
+  const linked = folder();
+  writeFileSync(path.join(linked, "shared.md"), "Shared.\n");
+  symlinkSync("shared.md", path.join(linked, "INSTRUCTIONS.md"));
+  assert.equal(dev(linked, ["init", ...EXAMPLE, "--no-clone"], { DEV_EXAMPLE_TOKEN: "good" }).code, 0);
+  assert.ok(lstatSync(path.join(linked, "INSTRUCTIONS.md")).isSymbolicLink());
+  assert.equal(readFileSync(path.join(linked, "shared.md"), "utf8"), "Shared.\n");
 });
 
 test("init asks for a flag when there's nobody to answer", () => {

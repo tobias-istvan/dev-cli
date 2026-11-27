@@ -10,6 +10,7 @@ import { DevError } from "../core/output.ts";
 import { count, stage, step } from "../core/progress.ts";
 import { chooseMany, choose, search, withInkPrompts } from "../core/prompt.ts";
 import { configPath, parseConfig, type ProjectConfig, saveConfig, CONFIG_VERSION } from "../core/project-config.ts";
+import { createInstructionsOnce } from "../core/instructions.ts";
 import { scaffold } from "../core/scaffold.ts";
 import { findWorkspaceRoot } from "../core/workspace.ts";
 import { ensureLogin } from "./login.ts";
@@ -187,6 +188,9 @@ async function initWorkspace(program: Command, registry: Registry, out: Output, 
   out.info(`\nWorkspace files: ${files.created.length} created, ${files.updated.length} updated, ${files.unchanged.length} already in place.`);
   if (files.differs.length > 0) {
     out.info(`Edited by hand, so left as they are:\n${files.differs.map((f) => `  ${f}`).join("\n")}`);
+  }
+  if ((await createInstructionsOnce(root)) === "created") {
+    out.info("Created INSTRUCTIONS.md for your own instructions to agents. It's yours: dev never changes it.");
   }
 
   // 7. The code.

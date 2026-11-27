@@ -80,7 +80,8 @@ test("task start creates the worktree, branch and notes, and is safe to re-run",
   assert.ok(existsSync(path.join(root, "tasks", taskId("Add dark mode!"), "progress.md")));
 
   // The workspace instructions are in the worktree but kept out of git.
-  assert.ok(existsSync(path.join(dir, ".github", "instructions", "dev-workspace.instructions.md")));
+  assert.match(readFileSync(path.join(dir, ".github", "instructions", "dev-workspace.instructions.md"), "utf8"), /Read `\.\.\/\.\.\/AGENTS\.md` before working here, then\n`\.\.\/\.\.\/INSTRUCTIONS\.md` if it exists/);
+  assert.ok(!existsSync(path.join(dir, "CLAUDE.md")), "Claude Code finds the workspace's CLAUDE.md above");
   assert.equal(git(dir, "status", "--porcelain"), "");
 
   writeFileSync(path.join(root, "tasks", taskId("Add dark mode!"), "brief.md"), "mine\n");

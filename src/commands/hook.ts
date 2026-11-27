@@ -14,6 +14,7 @@ import { readRecord, recordIds, reopenAdvice } from "../core/task-record.ts";
 import { worktreeIds } from "../core/worktree.ts";
 import { describeRefresh, refreshState } from "../core/refresh.ts";
 import { findWorkspaceRoot } from "../core/workspace.ts";
+import { INSTRUCTIONS_FILE, instructionsState } from "../core/instructions.ts";
 
 /**
  * What Copilot CLI and Claude Code run at session start, session end, and before each
@@ -60,6 +61,8 @@ export async function runSessionStart(registry: Registry, toolOption: string): P
   await recordSession(root, input, "start").catch(() => {});
 
   const lines = ["dev workspace. Read AGENTS.md before acting."];
+  // Claude Code skips CLAUDE.md's import from a worktree until someone approves it, and other tools have no import.
+  if (instructionsState(root) === "written") lines.push(`Then read ${path.join(root, INSTRUCTIONS_FILE)}: the workspace's own instructions, which add to AGENTS.md.`);
   const handoff = await latestHandoff(root).catch(() => null);
   if (handoff) {
     lines.push("", `Carried over from ${handoff.date}, next steps:`, handoff.nextSteps);

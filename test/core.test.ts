@@ -4,6 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -330,6 +331,10 @@ test("dev files writes the agent files for the enabled services only", () => {
   }
   assert.ok(existsSync(path.join(root, "docs", "example-notes.md")));
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, ".mcp.json"), "utf8")), { mcpServers: { example: { command: "example-mcp" } } });
+  assert.match(agents, /If `INSTRUCTIONS\.md` exists, read it after this file\./);
+  assert.match(agents, /never override the safety rules \(rules 3 to 5\) or the command check/);
+  assert.match(readFileSync(path.join(root, "CLAUDE.md"), "utf8"), /\n@INSTRUCTIONS\.md\n$/, "a bare import, outside backticks");
+  assert.ok(!existsSync(path.join(root, "INSTRUCTIONS.md")), "dev files never creates it");
   assert.ok(existsSync(path.join(root, "CLAUDE.md")));
   for (const folder of ["tasks", "worktrees", "notes"]) assert.ok(existsSync(path.join(root, folder)), folder);
 
@@ -363,6 +368,57 @@ test("dev files updates its own files, leaves edited ones alone, and removes wha
   assert.match(gitignore, /^node_modules\/\n/);
   assert.ok(!gitignore.includes("notes/.cache/"));
   assert.equal(gitignore.match(/# >>> dev/g)?.length, 1);
+});
+
+test("editing INSTRUCTIONS.md never stops dev updating AGENTS.md and CLAUDE.md", () => {
+  const root = workspace();
+  dev(root, ["files"]);
+  const record = path.join(root, ".dev", "generated.json");
+  // CLAUDE.md as an older dev wrote it, without the import.
+  const old = "# CLAUDE.md\n\nRead `AGENTS.md` first.\n";
+  writeFileSync(path.join(root, "CLAUDE.md"), old);
+  const hashes = JSON.parse(readFileSync(record, "utf8"));
+  hashes["CLAUDE.md"] = createHash("sha256").update(old).digest("hex");
+  writeFileSync(record, JSON.stringify(hashes));
+  writeFileSync(path.join(root, "INSTRUCTIONS.md"), "Always run the e2e tests.\n");
+  writeFileSync(path.join(root, "dev.yaml"), CONFIG.replace(/  - service: example:notes\n    scope:\n      book: team # the shared book\n/, "  - service: example:boards\n"));
+
+  const { code, out, err } = dev(root, ["files"]);
+  assert.equal(code, 0, err);
+  assert.match(out, /Updated:\n(.*\n)*  AGENTS\.md\n(.*\n)*  CLAUDE\.md/);
+  assert.match(readFileSync(path.join(root, "AGENTS.md"), "utf8"), /dev boards show/);
+  assert.match(readFileSync(path.join(root, "CLAUDE.md"), "utf8"), /@INSTRUCTIONS\.md/);
+  assert.equal(readFileSync(path.join(root, "INSTRUCTIONS.md"), "utf8"), "Always run the e2e tests.\n");
+  assert.doesNotMatch(out, /INSTRUCTIONS/);
+  assert.ok(!("INSTRUCTIONS.md" in JSON.parse(readFileSync(record, "utf8"))));
+
+  // Removing it is the person's call too: dev files doesn't bring it back.
+  rmSync(path.join(root, "INSTRUCTIONS.md"));
+  dev(root, ["files"]);
+  assert.ok(!existsSync(path.join(root, "INSTRUCTIONS.md")));
+});
+
+test("doctor mentions an empty or stub INSTRUCTIONS.md, and how to move hand edits there, without failing", () => {
+  const root = workspace();
+  const home = configHome();
+  dev(root, ["files"], { XDG_CONFIG_HOME: home });
+  const doctor = () => dev(root, ["doctor", "--offline"], { XDG_CONFIG_HOME: home, DEV_EXAMPLE_TOKEN: "good" });
+  const note = /INSTRUCTIONS\.md has no instructions in it yet/;
+
+  assert.doesNotMatch(doctor().out, note, "no file, nothing to say");
+  writeFileSync(path.join(root, "INSTRUCTIONS.md"), "");
+  assert.match(doctor().out, note);
+  writeFileSync(path.join(root, "INSTRUCTIONS.md"), readFileSync(path.join(import.meta.dirname, "..", "templates", "workspace", "INSTRUCTIONS.md"), "utf8"));
+  const stub = doctor();
+  assert.equal(stub.code, 0, stub.out);
+  assert.match(stub.out, note);
+  writeFileSync(path.join(root, "INSTRUCTIONS.md"), "# Ours\n\n<!-- a note -->\nAnswer in British English.\n");
+  assert.doesNotMatch(doctor().out, note);
+
+  writeFileSync(path.join(root, "CLAUDE.md"), "Mine\n");
+  const edited = doctor();
+  assert.equal(edited.code, 0, edited.out);
+  assert.match(edited.out, /CLAUDE\.md was edited by hand, so dev leaves it alone\. To get dev's updates again, move your additions to INSTRUCTIONS\.md, delete CLAUDE\.md and run "dev files"\./);
 });
 
 // ---------------------------------------------------------------------------

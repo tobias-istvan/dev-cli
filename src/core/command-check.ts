@@ -399,18 +399,37 @@ export function judge(line: string, policy: Policy, map: Map<string, Classifier>
 /** Commands that only read the files they're given. */
 const READERS = new Set(["cat", "head", "tail", "less", "more", "grep", "rg", "wc", "diff", "bat", "file", "stat", "ls", "yq", "jq"]);
 
-/** Whether a path is one an agent shouldn't change: dev.yaml, or anything in the dev config folder. */
-export function isProtected(word: string, root: string | null, cwd: string | null = null): boolean {
+/**
+ * The workspace's own files an agent shouldn't change, each with what it is. Only the
+ * workspace root's: the code repository may have files of those names too.
+ */
+const WORKSPACE_FILES: Record<string, string> = {
+  "dev.yaml": "the workspace's dev config",
+  "INSTRUCTIONS.md": "the workspace's instructions for agents",
+};
+
+/** What a path an agent shouldn't change is, or null: dev.yaml, INSTRUCTIONS.md, or anything in the dev config folder. */
+export function protectedFile(word: string, root: string | null, cwd: string | null = null): string | null {
   const target = word.replace(/^\d*>>?/, "").replace(/^["']|["']$/g, "");
-  if (!target) return false;
-  if (/(^|\/)dev\.yaml$/.test(target)) {
-    // Only the workspace's own dev.yaml: the code repository may have a file of that name too.
-    if (!root) return target === "dev.yaml";
-    if (path.isAbsolute(target)) return target === path.join(root, "dev.yaml");
-    return cwd ? path.resolve(cwd, target) === path.join(root, "dev.yaml") : target === "dev.yaml";
+  if (!target) return null;
+  const name = path.basename(target);
+  const what = Object.hasOwn(WORKSPACE_FILES, name) ? WORKSPACE_FILES[name] : undefined;
+  if (what && (target === name || target.endsWith(`/${name}`))) {
+    let mine: boolean;
+    // Outside a workspace, a bare dev.yaml may still be one, but INSTRUCTIONS.md is a common name.
+    if (!root) mine = target === name && name === "dev.yaml";
+    else if (path.isAbsolute(target)) mine = target === path.join(root, name);
+    else mine = cwd ? path.resolve(cwd, target) === path.join(root, name) : target === name;
+    return mine ? what : null;
   }
   const folder = configDir();
-  return target.includes("/.config/dev/") || target === "~/.config/dev" || (path.isAbsolute(target) && (target === folder || target.startsWith(`${folder}${path.sep}`)));
+  const settings = target.includes("/.config/dev/") || target === "~/.config/dev" || (path.isAbsolute(target) && (target === folder || target.startsWith(`${folder}${path.sep}`)));
+  return settings ? "your dev settings" : null;
+}
+
+/** Whether a path is one an agent shouldn't change. See protectedFile. */
+export function isProtected(word: string, root: string | null, cwd: string | null = null): boolean {
+  return protectedFile(word, root, cwd) !== null;
 }
 
 /** A call for each command line part that may write a protected file. */
@@ -426,16 +445,17 @@ function protectedCalls(line: string, root: string | null, cwd: string | null): 
     const writes = /^\d*>>?\S/.test(touched) || /^\d*>>?$/.test(segment.words[at - 1] ?? "");
     const gitRead = first === "git" && ["diff", "log", "show", "status", "blame"].includes(words[1] ?? "");
     if (!writes && (READERS.has(first) || gitRead)) continue;
-    calls.push({ command: `${first} ${path.basename(touched.replace(/^\d*>>?/, ""))}`, kind: "config", why: "may change the workspace's dev config or your dev settings" });
+    calls.push({ command: `${first} ${path.basename(touched.replace(/^\d*>>?/, ""))}`, kind: "config", why: `may change ${protectedFile(touched, root, cwd)}` });
   }
   return calls;
 }
 
 /** The verdict for a file edit tool, like Edit or Write, about to change `file`. */
 export function judgeFileEdit(file: string, policy: Policy, root: string | null): Verdict | null {
-  if (!isProtected(file, root, root)) return null;
+  const what = protectedFile(file, root, root);
+  if (!what) return null;
   const decision = policy.config;
-  const call = { command: `edit ${path.basename(file)}`, kind: "config" as const, why: "changes the workspace's dev config or your dev settings", decision, rule: `config: ${decision}` };
+  const call = { command: `edit ${path.basename(file)}`, kind: "config" as const, why: `changes ${what}`, decision, rule: `config: ${decision}` };
   if (decision === "allow") return { decision: null, calls: [call], reason: "" };
   return {
     decision,

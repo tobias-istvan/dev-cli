@@ -163,7 +163,8 @@ export function buildProgram({ registry, out }: ProgramOptions): Command {
       details(`
 Asks where the code is hosted, logs you in, lets you pick the repository and the other
 services the team uses, then writes dev.yaml and the workspace's files and clones the
-code into repository/.
+code into repository/. The first time, it also creates INSTRUCTIONS.md for your own
+instructions to agents, which dev never changes after that.
 
 Every question has a flag, for scripts. It's safe to run again: it keeps what dev.yaml
 already says, offers what's missing, and never overwrites a file you've edited. It never
@@ -258,7 +259,8 @@ Exit codes:
 Writes AGENTS.md, CLAUDE.md, the skills, service docs, MCP entries and dev's lines in
 .gitignore, from dev.yaml and the enabled services.
 
-A file you've edited by hand is left as it is and listed, so this is always safe to run.`),
+A file you've edited by hand is left as it is and listed, so this is always safe to run.
+Your own instructions for agents go in INSTRUCTIONS.md, which this never touches.`),
     )
     .action(async () => {
       const { runFiles } = await import("./commands/files.ts");
@@ -436,8 +438,8 @@ person first; anything the check can't follow asks too. Commands it doesn't know
 to your tool.
 
 Changing the workspace's config is a separate kind, "config": dev add, remove, login and
-logout, changing a scope, and any edit to dev.yaml or to your dev settings folder. It asks
-by default; set "config": "deny" to block agents from it entirely.
+logout, changing a scope, and any edit to dev.yaml, INSTRUCTIONS.md or your dev settings
+folder. It asks by default; set "config": "deny" to block agents from it entirely.
 
 Change the defaults in policy.json, in your dev config folder:
 

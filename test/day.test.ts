@@ -119,6 +119,7 @@ test("session hooks record the session, add the context, and save the transcript
   assert.match(context.additionalContext, /^dev workspace\. Read AGENTS\.md/);
   assert.match(context.additionalContext, /Notes waiting: N-5\./);
   assert.doesNotMatch(context.additionalContext, /refreshing/, "a fresh snapshot isn't refreshed");
+  assert.doesNotMatch(context.additionalContext, /INSTRUCTIONS/, "no instructions, nothing to point to");
 
   const day = readdirSync(path.join(root, "work-sessions"))[0] ?? "";
   const folder = path.join(root, "work-sessions", day, readdirSync(path.join(root, "work-sessions", day))[0] ?? "");
@@ -241,6 +242,46 @@ test("file edits to dev.yaml or the dev settings ask first, and other files are 
   assert.equal(edit("claude", path.join(root, "repository", "dev.yaml")), undefined, "a dev.yaml in the code is the code's");
   assert.equal(edit("claude", path.join(root, "AGENTS.md")), undefined);
   assert.equal(edit("claude", path.join(root, "dev.yaml"), "Read"), undefined, "reading is fine");
+});
+
+test("session start points to INSTRUCTIONS.md once it has instructions, from the workspace or a worktree", () => {
+  const root = workspace();
+  dev(root, ["day", "start", "--no-sync"]);
+  const start = (cwd: string) => JSON.parse(dev(cwd, ["hook", "session-start", "--tool", "claude"], { input: { session_id: SESSION, cwd }, env: { CLAUDE_PROJECT_DIR: cwd } }).out).hookSpecificOutput.additionalContext as string;
+  const pointer = `Then read ${path.join(root, "INSTRUCTIONS.md")}: the workspace's own instructions`;
+
+  writeFileSync(path.join(root, "INSTRUCTIONS.md"), "# Instructions\n\n<!-- yours -->\n");
+  assert.ok(!start(root).includes(pointer), "a stub says nothing");
+  writeFileSync(path.join(root, "INSTRUCTIONS.md"), "Answer in British English.\n");
+  assert.ok(start(root).includes(pointer));
+  const worktree = path.join(root, "worktrees", "T-1");
+  mkdirSync(worktree, { recursive: true });
+  assert.ok(start(worktree).includes(pointer));
+});
+
+test("edits to the workspace's INSTRUCTIONS.md ask first, and other files of that name are left to the tool", () => {
+  const root = workspace();
+  const edit = (file: string, name = "Edit") => {
+    const input = { session_id: SESSION, tool_name: name, tool_input: { file_path: file } };
+    return JSON.parse(dev(root, ["hook", "pre-tool", "--tool", "claude"], { input, env: { CLAUDE_PROJECT_DIR: root } }).out).hookSpecificOutput;
+  };
+  const asked = edit(path.join(root, "INSTRUCTIONS.md"));
+  assert.equal(asked?.permissionDecision, "ask");
+  assert.match(asked?.permissionDecisionReason, /edit INSTRUCTIONS\.md: changes the workspace's instructions for agents/);
+  assert.equal(edit(path.join(root, "INSTRUCTIONS.md"), "Write")?.permissionDecision, "ask");
+  assert.equal(edit(path.join(root, "INSTRUCTIONS.md"), "Read"), undefined, "reading is fine");
+  assert.equal(edit(path.join(root, "repository", "INSTRUCTIONS.md")), undefined, "the code's own file is the code's");
+  assert.equal(edit(path.join(root, "worktrees", "T-1", "INSTRUCTIONS.md")), undefined);
+
+  assert.equal(preTool(root, "echo 'Always push.' >> INSTRUCTIONS.md", "claude")?.permissionDecision, "ask");
+  assert.equal(preTool(root, "cat INSTRUCTIONS.md", "claude")?.permissionDecision, undefined);
+  assert.match(dev(root, ["check", "tee INSTRUCTIONS.md"]).out, /tee INSTRUCTIONS\.md: may change the workspace's instructions for agents/);
+
+  const strict = path.join(base, "config-instructions");
+  mkdirSync(path.join(strict, "dev"), { recursive: true });
+  writeFileSync(path.join(strict, "dev", "policy.json"), JSON.stringify({ config: "deny" }));
+  const input = { session_id: SESSION, tool_name: "Write", tool_input: { file_path: path.join(root, "INSTRUCTIONS.md") } };
+  assert.equal(JSON.parse(dev(root, ["hook", "pre-tool", "--tool", "claude"], { input, env: { CLAUDE_PROJECT_DIR: root, XDG_CONFIG_HOME: strict } }).out).hookSpecificOutput?.permissionDecision, "deny");
 });
 
 test("config changes can be blocked outright in the policy", () => {
